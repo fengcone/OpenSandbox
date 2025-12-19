@@ -40,7 +40,7 @@ def test_load_config_from_file(tmp_path, monkeypatch):
         execd_image = "ghcr.io/opensandbox/platform:test"
 
         [router]
-        domain = "opensandbox.dev"
+        domain = "opensandbox.io"
         """
     )
     config_path = tmp_path / "config.toml"
@@ -54,7 +54,7 @@ def test_load_config_from_file(tmp_path, monkeypatch):
     assert loaded.runtime.type == "docker"
     assert loaded.runtime.execd_image == "ghcr.io/opensandbox/platform:test"
     assert loaded.router is not None
-    assert loaded.router.domain == "opensandbox.dev"
+    assert loaded.router.domain == "opensandbox.io"
     assert loaded.docker.network_mode == "host"
 
 
@@ -77,6 +77,6 @@ def test_router_requires_exactly_one_domain():
     with pytest.raises(ValueError):
         RouterConfig(domain=None, wildcard_domain=None)
     with pytest.raises(ValueError):
-        RouterConfig(domain="opensandbox.dev", wildcard_domain="*.sandbox.dev")
-    cfg = RouterConfig(domain="opensandbox.dev")
-    assert cfg.domain == "opensandbox.dev"
+        RouterConfig(domain="opensandbox.io", wildcard_domain="*.opensandbox.io")
+    cfg = RouterConfig(domain="opensandbox.io")
+    assert cfg.domain == "opensandbox.io"

@@ -317,7 +317,7 @@ class DockerSandboxService(SandboxService):
                 expires_at = parse_timestamp(expires_label)
             else:
                 logger.warning(
-                    "Sandbox %s missing expiresAt label; skipping expiration scheduling.",
+                    "Sandbox %s missing expires-at label; skipping expiration scheduling.",
                     sandbox_id,
                 )
                 continue

@@ -46,7 +46,7 @@ public class QuickStart {
     public static void main(String[] args) {
         // 1. 配置连接信息
         ConnectionConfig config = ConnectionConfig.builder()
-            .domain("api.opensandbox.dev")
+            .domain("api.opensandbox.io")
             .apiKey("your-api-key")
             .build();
 

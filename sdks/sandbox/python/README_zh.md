@@ -33,7 +33,7 @@ from opensandbox.exceptions import SandboxException
 async def main():
     # 1. 配置连接信息
     config = ConnectionConfig(
-        domain="api.opensandbox.dev",
+        domain="api.opensandbox.io",
         api_key="your-api-key"
     )
 
@@ -77,7 +77,7 @@ from opensandbox import SandboxSync
 from opensandbox.config import ConnectionConfigSync
 
 config = ConnectionConfigSync(
-    domain="api.opensandbox.dev",
+    domain="api.opensandbox.io",
     api_key="your-api-key",
     request_timeout=timedelta(seconds=30),
     transport=httpx.HTTPTransport(limits=httpx.Limits(max_connections=20)),
@@ -249,7 +249,7 @@ from datetime import timedelta
 # 1. 基础配置
 config = ConnectionConfig(
     api_key="your-key",
-    domain="api.opensandbox.dev",
+    domain="api.opensandbox.io",
     request_timeout=timedelta(seconds=60)
 )
 
@@ -259,7 +259,7 @@ import httpx
 
 config = ConnectionConfig(
     api_key="your-key",
-    domain="api.opensandbox.dev",
+    domain="api.opensandbox.io",
     headers={"X-Custom-Header": "value"},
     transport=httpx.AsyncHTTPTransport(
         limits=httpx.Limits(

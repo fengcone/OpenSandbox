@@ -14,11 +14,11 @@
 
 """Shared constants for sandbox services."""
 
-SANDBOX_ID_LABEL = "sandbox.dev/id"
-SANDBOX_EXPIRES_AT_LABEL = "sandbox.dev/expiresAt"
+SANDBOX_ID_LABEL = "opensandbox.io/id"
+SANDBOX_EXPIRES_AT_LABEL = "opensandbox.io/expires-at"
 # Host-mapped ports recorded on containers (bridge mode).
-SANDBOX_EMBEDDING_PROXY_PORT_LABEL = "sandbox.dev/embeddingProxyPort"  # maps container 44772 -> host port
-SANDBOX_HTTP_PORT_LABEL = "sandbox.dev/httpPort"  # maps container 8080 -> host port
+SANDBOX_EMBEDDING_PROXY_PORT_LABEL = "opensandbox.io/embedding-proxy-port"  # maps container 44772 -> host port
+SANDBOX_HTTP_PORT_LABEL = "opensandbox.io/http-port"  # maps container 8080 -> host port
 
 
 class SandboxErrorCodes:

@@ -45,7 +45,7 @@ from opensandbox.config import ConnectionConfig
 async def main() -> None:
     # 1. Configure connection
     config = ConnectionConfig(
-        domain="api.opensandbox.dev",
+        domain="api.opensandbox.io",
         api_key="your-api-key",
         request_timeout=timedelta(seconds=60),
     )
@@ -102,7 +102,7 @@ from opensandbox import SandboxSync
 from opensandbox.config import ConnectionConfigSync
 
 config = ConnectionConfigSync(
-    domain="api.opensandbox.dev",
+    domain="api.opensandbox.io",
     api_key="your-api-key",
     request_timeout=timedelta(seconds=60),
     transport=httpx.HTTPTransport(limits=httpx.Limits(max_connections=20)),

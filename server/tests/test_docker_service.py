@@ -38,7 +38,7 @@ def _app_config() -> AppConfig:
     return AppConfig(
         server=ServerConfig(),
         runtime=RuntimeConfig(type="docker", execd_image="ghcr.io/opensandbox/platform:latest"),
-        router=RouterConfig(domain="opensandbox.dev"),
+        router=RouterConfig(domain="opensandbox.io"),
     )
 
 

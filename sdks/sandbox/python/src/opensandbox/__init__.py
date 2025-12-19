@@ -56,7 +56,7 @@ from opensandbox.models.sandboxes import SandboxImageSpec, SandboxImageAuth
 async def main():
     config = ConnectionConfig(
         api_key="your-api-key",
-        domain="api.opensandbox.dev"
+        domain="api.opensandbox.io"
     )
 
     # With private registry auth

@@ -41,7 +41,7 @@ public class QuickStart {
     public static void main(String[] args) {
         // 1. 配置连接信息
         ConnectionConfig config = ConnectionConfig.builder()
-            .domain("api.opensandbox.dev")
+            .domain("api.opensandbox.io")
             .apiKey("your-api-key")
             .build();
 
@@ -224,7 +224,7 @@ sandboxes.getSandboxInfos().forEach(info -> {
 // 1. 基础配置
 ConnectionConfig config = ConnectionConfig.builder()
     .apiKey("your-key")
-    .domain("api.opensandbox.dev")
+    .domain("api.opensandbox.io")
     .requestTimeout(Duration.ofSeconds(60))
     .build();
 
@@ -234,7 +234,7 @@ ConnectionPool sharedPool = new ConnectionPool(50, 5, TimeUnit.MINUTES);
 
 ConnectionConfig sharedConfig = ConnectionConfig.builder()
     .apiKey("your-key")
-    .domain("api.opensandbox.dev")
+    .domain("api.opensandbox.io")
     .connectionPool(sharedPool) // 注入共享连接池
     .build();
 ```

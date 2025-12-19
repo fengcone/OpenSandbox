@@ -23,4 +23,4 @@ type = "docker"
 execd_image = "ghcr.io/opensandbox/platform:latest"
 
 [router]
-domain = "opensandbox.dev"
+domain = "opensandbox.io"

@@ -40,7 +40,7 @@ public class QuickStart {
     public static void main(String[] args) {
         // 1. Configure connection
         ConnectionConfig config = ConnectionConfig.builder()
-            .domain("api.opensandbox.dev")
+            .domain("api.opensandbox.io")
             .apiKey("your-api-key")
             .build();
 
@@ -223,7 +223,7 @@ The `ConnectionConfig` class manages API server connection settings.
 // 1. Basic configuration
 ConnectionConfig config = ConnectionConfig.builder()
     .apiKey("your-key")
-    .domain("api.opensandbox.dev")
+    .domain("api.opensandbox.io")
     .requestTimeout(Duration.ofSeconds(60))
     .build();
 
@@ -233,7 +233,7 @@ ConnectionPool sharedPool = new ConnectionPool(50, 5, TimeUnit.MINUTES);
 
 ConnectionConfig sharedConfig = ConnectionConfig.builder()
     .apiKey("your-key")
-    .domain("api.opensandbox.dev")
+    .domain("api.opensandbox.io")
     .connectionPool(sharedPool) // Inject shared pool
     .build();
 ```

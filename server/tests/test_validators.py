@@ -19,7 +19,7 @@ def test_ensure_metadata_labels_accepts_common_k8s_forms():
     # Various valid label shapes: with/without prefix, mixed chars, empty value allowed.
     valid_metadata = {
         "app": "web",
-        "opensandbox.dev/hello": "world",
+        "opensandbox.io/hello": "world",
         "k8s.io/name": "app-1",
         "example.com/label": "a.b_c-1",
         "team": "A1_b-2.c",

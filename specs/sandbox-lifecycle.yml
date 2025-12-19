@@ -780,7 +780,7 @@ components:
           description: |
             Public URL to access the service from outside the sandbox.
             Format: {endpoint-host}/sandboxes/{sandboxId}/port/{port}
-            Example: endpoint.opensandbox.dev/sandboxes/abc123/port/8080
+            Example: endpoint.opensandbox.io/sandboxes/abc123/port/8080
       required:
         - endpoint
       additionalProperties: false

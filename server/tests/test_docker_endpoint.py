@@ -63,8 +63,8 @@ def test_get_endpoint_bridge_http_port(mock_docker_service):
     service.network_mode = "bridge"
 
     labels = {
-        "sandbox.dev/embeddingProxyPort": "50002",
-        "sandbox.dev/httpPort": "50001",
+        "opensandbox.io/embedding-proxy-port": "50002",
+        "opensandbox.io/http-port": "50001",
     }
     mock_container = MagicMock()
     mock_container.attrs = {
@@ -86,8 +86,8 @@ def test_get_endpoint_bridge_other_port_via_execd(mock_docker_service):
     service.network_mode = "bridge"
 
     labels = {
-        "sandbox.dev/embeddingProxyPort": "50002",
-        "sandbox.dev/httpPort": "50001",
+        "opensandbox.io/embedding-proxy-port": "50002",
+        "opensandbox.io/http-port": "50001",
     }
     mock_container = MagicMock()
     mock_container.attrs = {

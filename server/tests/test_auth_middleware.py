@@ -23,7 +23,7 @@ def _app_config_with_api_key() -> AppConfig:
     return AppConfig(
         server=ServerConfig(api_key="secret-key"),
         runtime=RuntimeConfig(type="docker", execd_image="ghcr.io/opensandbox/platform:latest"),
-        router=RouterConfig(domain="opensandbox.dev"),
+        router=RouterConfig(domain="opensandbox.io"),
     )
 
 

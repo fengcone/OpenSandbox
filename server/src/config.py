@@ -44,13 +44,13 @@ class RouterConfig(BaseModel):
 
     domain: Optional[str] = Field(
         default=None,
-        description="Base domain used to expose sandbox endpoints (e.g., 'opensandbox.dev').",
+        description="Base domain used to expose sandbox endpoints (e.g., 'opensandbox.io').",
         min_length=1,
     )
     wildcard_domain: Optional[str] = Field(
         default=None,
         alias="wildcard-domain",
-        description="Wildcard domain pattern (e.g., '*.sandbox.dev') used for sandbox endpoints.",
+        description="Wildcard domain pattern (e.g., '*.opensandbox.io') used for sandbox endpoints.",
         min_length=1,
     )
 

@@ -25,7 +25,7 @@ async def main():
             image="opensandbox/chrome:latest",
             timeout=timedelta(minutes=5),
             entrypoint=["/entrypoint"],
-            metadata={"examples.opensandbox.dev": "chrome"},
+            metadata={"examples.opensandbox.io": "chrome"},
             connection_config=ConnectionConfig(
                 domain="localhost:8080"
             )
