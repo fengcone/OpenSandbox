@@ -42,4 +42,29 @@ The script creates a Sandbox + CodeInterpreter, runs a Python code snippet and p
 - `SANDBOX_DOMAIN`: Sandbox service address (default: `localhost:8080`)
 - `SANDBOX_API_KEY`: API key if your server requires authentication
 - `SANDBOX_IMAGE`: Sandbox image to use (default: `opensandbox/code-interpreter:latest`)
-- `PYTHON_VERSION`: Python version inside the sandbox (default: `3.11`)
+
+## Example output
+
+```text
+=== Python example ===
+[Python stdout] Hello from Python!
+
+[Python result] {'py': '3.14.2', 'sum': 4}
+
+=== Java example ===
+[Java stdout] Hello from Java!
+
+[Java stdout] 2 + 3 = 5
+
+[Java result] 5
+
+=== Go example ===
+[Go stdout] Hello from Go!
+3 + 4 = 7
+
+
+=== TypeScript example ===
+[TypeScript stdout] Hello from TypeScript!
+
+[TypeScript stdout] sum = 6
+```

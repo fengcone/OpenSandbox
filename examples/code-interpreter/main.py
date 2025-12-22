@@ -20,12 +20,11 @@ from code_interpreter import CodeInterpreter, SupportedLanguage
 from opensandbox import Sandbox
 from opensandbox.config import ConnectionConfig
 
+
 async def main() -> None:
     domain = os.getenv("SANDBOX_DOMAIN", "localhost:8080")
     api_key = os.getenv("SANDBOX_API_KEY")
     image = os.getenv("SANDBOX_IMAGE", "opensandbox/code-interpreter:latest")
-    entry_point = "/opt/opensandbox/code-interpreter.sh"
-    python_version = os.getenv("PYTHON_VERSION", "3.11")
 
     config = ConnectionConfig(
         domain=domain,
@@ -36,27 +35,77 @@ async def main() -> None:
     sandbox = await Sandbox.create(
         image,
         connection_config=config,
-        entrypoint=[entry_point],
-        env={"PYTHON_VERSION": python_version},
+        entrypoint=["/opt/opensandbox/code-interpreter.sh"]
     )
 
     async with sandbox:
         interpreter = await CodeInterpreter.create(sandbox=sandbox)
-        ctx = await interpreter.codes.create_context(SupportedLanguage.PYTHON)
 
-        execution = await interpreter.codes.run(
+        # Python example: show runtime info and return a simple calculation.
+        py_ctx = await interpreter.codes.create_context(SupportedLanguage.PYTHON)
+        py_exec = await interpreter.codes.run(
             "import platform\n"
-            "print('hello from code-interpreter sandbox')\n"
-            "result = {'py': platform.python_version(), 'sum': 1 + 1}\n"
+            "print('Hello from Python!')\n"
+            "result = {'py': platform.python_version(), 'sum': 2 + 2}\n"
             "result",
-            context=ctx,
+            context=py_ctx,
         )
+        print("\n=== Python example ===")
+        for msg in py_exec.logs.stdout:
+            print(f"[Python stdout] {msg.text}")
+        if py_exec.result:
+            for res in py_exec.result:
+                print(f"[Python result] {res.text}")
 
-        for msg in execution.logs.stdout:
-            print(f"[stdout] {msg.text}")
+        # Java example: print to stdout and return the final result line.
+        java_ctx = await interpreter.codes.create_context(SupportedLanguage.JAVA)
+        java_exec = await interpreter.codes.run(
+            "System.out.println(\"Hello from Java!\");\n"
+            "int result = 2 + 3;\n"
+            "System.out.println(\"2 + 3 = \" + result);\n"
+            "result",
+            context=java_ctx,
+        )
+        print("\n=== Java example ===")
+        for msg in java_exec.logs.stdout:
+            print(f"[Java stdout] {msg.text}")
+        if java_exec.result:
+            for res in java_exec.result:
+                print(f"[Java result] {res.text}")
+        if java_exec.error:
+            print(f"[Java error] {java_exec.error.name}: {java_exec.error.value}")
 
-        if execution.result:
-            print(f"[result] {execution.result[0].text}")
+        # Go example: print logs and demonstrate a main function structure.
+        go_ctx = await interpreter.codes.create_context(SupportedLanguage.GO)
+        go_exec = await interpreter.codes.run(
+            "package main\n"
+            "import \"fmt\"\n"
+            "func main() {\n"
+            "    fmt.Println(\"Hello from Go!\")\n"
+            "    sum := 3 + 4\n"
+            "    fmt.Println(\"3 + 4 =\", sum)\n"
+            "}",
+            context=go_ctx,
+        )
+        print("\n=== Go example ===")
+        for msg in go_exec.logs.stdout:
+            print(f"[Go stdout] {msg.text}")
+        if go_exec.error:
+            print(f"[Go error] {go_exec.error.name}: {go_exec.error.value}")
+
+        # TypeScript example: use typing and sum an array.
+        ts_ctx = await interpreter.codes.create_context(SupportedLanguage.TYPESCRIPT)
+        ts_exec = await interpreter.codes.run(
+            "console.log('Hello from TypeScript!');\n"
+            "const nums: number[] = [1, 2, 3];\n"
+            "console.log('sum =', nums.reduce((a, b) => a + b, 0));",
+            context=ts_ctx,
+        )
+        print("\n=== TypeScript example ===")
+        for msg in ts_exec.logs.stdout:
+            print(f"[TypeScript stdout] {msg.text}")
+        if ts_exec.error:
+            print(f"[TypeScript error] {ts_exec.error.name}: {ts_exec.error.value}")
 
         await interpreter.kill()
 
