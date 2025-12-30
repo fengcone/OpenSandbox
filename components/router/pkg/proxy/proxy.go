@@ -47,7 +47,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if err := recover(); err != nil {
 			Logger.Errorw("Proxy: proxy causes panic", "error", err)
-			http.Error(w, err.(error).Error(), http.StatusBadGateway)
+			var errMsg string
+			if e, ok := err.(error); ok {
+				errMsg = e.Error()
+			} else {
+				errMsg = fmt.Sprintf("%v", err)
+			}
+			http.Error(w, errMsg, http.StatusBadGateway)
 		}
 	}()
 
@@ -74,8 +80,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if code == http.StatusNotFound {
 			Logger.Warnw("Proxy: no pod found for ingress rule", "ingress", host.ingressKey)
 		}
-
 		http.Error(w, fmt.Sprintf("Proxy: %v", err), code)
+		return
 	}
 
 	Logger.Infow("proxy requested", "target", targetHost, "client", p.getClientIP(r), "headers", r.Header, "uri", r.RequestURI, "method", r.Method)
