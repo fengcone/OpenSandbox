@@ -64,7 +64,7 @@ spec:
           - --leader-elect
           - --health-probe-bind-address=:8081
           - --v=3
-        image: controller:latest
+        image: controller:dev
         name: manager
         ports: []
         securityContext:
@@ -97,3 +97,4 @@ spec:
       volumes: []
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
+

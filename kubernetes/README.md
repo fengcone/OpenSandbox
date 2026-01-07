@@ -43,6 +43,7 @@ Intelligent resource management features:
 - Automatic scaling based on demand
 
 ## Getting Started
+![](images/deploy-example.gif)
 
 ### Prerequisites
 - go version v1.24.0+

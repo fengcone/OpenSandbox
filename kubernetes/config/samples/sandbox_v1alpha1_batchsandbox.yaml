@@ -4,7 +4,7 @@ metadata:
   labels:
     app.kubernetes.io/name: sandbox-k8s
     app.kubernetes.io/managed-by: kustomize
-  name: batchsandbox-sample-11
+  name: batchsandbox-sample
   namespace: sandbox-k8s
 spec:
   replicas: 1
@@ -18,6 +18,4 @@ spec:
     spec:
       process:
         command:
-          - sleep
-        args:
-          - "10"
+          - /opt/opensandbox/code-interpreter.sh

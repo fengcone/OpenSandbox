@@ -51,9 +51,9 @@ endif
 OPERATOR_SDK_VERSION ?= v1.42.0
 # Image URL to use all building/pushing image targets
 # IMG defines the image for the controller manager.
-IMG ?= controller:latest
+IMG ?= controller:dev
 # TASK_EXECUTOR_IMG defines the image for the task-executor service.
-TASK_EXECUTOR_IMG ?= task-executor:latest
+TASK_EXECUTOR_IMG ?= task-executor:dev
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
