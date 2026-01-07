@@ -7,6 +7,8 @@ services:
     image: opensandbox/egress:latest
     cap_add:
       - NET_ADMIN
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "1"
     environment:
       # Allow google.com only; default deny
       OPENSANDBOX_NETWORK_POLICY: |
@@ -17,10 +19,13 @@ services:
     depends_on:
       - egress
     network_mode: "service:egress"
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "1"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >
         set -e;
+        sleep 10;
         echo "=== allowed domain (google.com) ===";
         curl -I --max-time 10 https://google.com;
         echo "=== blocked domain (www.github.com) ===";
