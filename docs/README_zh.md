@@ -19,7 +19,7 @@ OpenSandbox 是一个面向 AI 应用场景设计的「通用沙箱平台」，�
 
 - **多语言 SDK**：提供 Python、Java、TypeScript (Roadmap)、Go (Roadmap) 等语言的客户端 SDK。
 - **沙箱协议**：定义了沙箱生命周期管理 API 和沙箱执行 API。你可以通过这些沙箱协议扩展自己的沙箱运行时。
-- **沙箱运行时**：默认实现沙箱生命周期管理，支持 Docker、Kubernetes 等运行时，实现大规模分布式沙箱调度。
+- **沙箱运行时**：默认实现沙箱生命周期管理，支持 Docker 和 Kubernetes 运行时，实现大规模分布式沙箱调度。
 - **沙箱环境**：内置 Command、Filesystem、Code Interpreter 实现。并提供 Coding Agent（Claude Code 等）、浏览器自动化（Chrome、Playwright）和桌面环境（VNC、VS Code）等示例。
 
 ## 使用示例
@@ -137,6 +137,8 @@ OpenSandbox 提供了丰富的示例来演示不同场景下的沙箱使用方�
 - **[gemini-cli](../examples/gemini-cli/README.md)** - Google Gemini CLI 集成
 - **[codex-cli](../examples/codex-cli/README.md)** - OpenAI Codex CLI 集成
 - **[iflow-cli](../examples/iflow-cli/README.md)** - iFLow CLI 集成
+- **[langgraph](../examples/langgraph/README.md)** - LangGraph 集成
+- **[google-adk](../examples/google-adk/README.md)** - Google ADK 集成
 
 #### 🌐 浏览器与桌面环境
 
@@ -170,8 +172,10 @@ OpenSandbox 提供了丰富的示例来演示不同场景下的沙箱使用方�
 | 目录 | 说明 |
 |------|------|
 | [`server/`](../server/README_zh.md) | Python FastAPI 沙箱生命周期服务 |
-| [`components/execd/`](../components/execd/README_zh.md) | Go 执行守护进程，负责命令和文件操作 |
-| [`sdks/`](../sdks/) | 多语言 SDK（Python、Kotlin） |
+| [`components/execd/`](../components/execd/README_zh.md) | 沙箱执行守护进程，负责命令和文件操作 |
+| [`components/ingress/`](../components/ingress/README.md) | 沙箱流量入口代理 |
+| [`components/egress/`](../components/egress/README.md) | 沙箱网络 Egress 访问控制 |
+| [`sdks/`](../sdks/) | 多语言 SDK（Python、Java/Kotlin） |
 | [`sandboxes/`](../sandboxes/) | 沙箱运行时镜像（如 code-interpreter） |
 | [`kubernetes/`](../kubernetes/README-ZH.md) | Kubernetes Operator 和批量沙箱支持 |
 | [`specs/`](../specs/README_zh.md) | OpenAPI 规范 |
@@ -179,6 +183,7 @@ OpenSandbox 提供了丰富的示例来演示不同场景下的沙箱使用方�
 | [`oseps/`](../oseps/README.md) | OpenSandbox Enhancement Proposals |
 | [`docs/`](../docs/) | 架构和设计文档 |
 | [`tests/`](../tests/) | 跨组件端到端测试 |
+| [`scripts/`](../scripts/) | 开发和维护脚本 |
 
 详细架构请参阅 [docs/architecture.md](architecture.md)。
 
@@ -209,6 +214,8 @@ OpenSandbox 提供了丰富的示例来演示不同场景下的沙箱使用方�
 - [x] **自研 Kubernetes 沙箱调度器** - 高性能沙箱调度实现（见 [`kubernetes/`](../kubernetes/README-ZH.md)）
 - [ ] **kubernetes-sigs/agent-sandbox 支持** - 集成 [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) 沙箱调度能力
 - [ ] **声明式网络隔离** - 支持允许/禁止特定域名规则的网络 egress 访问控制（见 [OSEP-0001](../oseps/0001-fqdn-based-egress-control.md)）
+  - [x] 基于 DNS 的 Egress 控制（Layer 1）
+  - [ ] 基于网络的 Egress 控制（Layer 2）
 
 ## 联系与讨论
 

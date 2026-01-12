@@ -20,7 +20,7 @@ OpenSandbox is a **universal sandbox platform** for AI application scenarios, pr
 
 - **Multi-language SDKs**: Provides sandbox SDKs in Python, Java, TypeScript (Roadmap),Go(Roadmap) and other languages.
 - **Sandbox Protocol**: Defines sandbox lifecycle management API and sandbox execution API. You can extend your own sandbox runtime through these sandbox protocols.
-- **Sandbox Runtime**: Implements sandbox lifecycle management by default, supports Docker, Kubernetes(Roadmap) and other runtimes, enabling large-scale distributed sandbox scheduling.
+- **Sandbox Runtime**: Implements sandbox lifecycle management by default, supports Docker and Kubernetes runtimes, enabling large-scale distributed sandbox scheduling.
 - **Sandbox Environments**: Built-in implementations for Command, Filesystem, Code Interpreter. And provides examples for Coding Agents (Claude Code, etc.), Browser automation (Chrome, Playwright), and Desktop environments (VNC, VS Code).
 
 ## Examples
@@ -138,6 +138,8 @@ OpenSandbox integrates various Coding Agents, including Claude Code, Google Gemi
 - **[gemini-cli](examples/gemini-cli/README.md)** - Google Gemini CLI integration
 - **[codex-cli](examples/codex-cli/README.md)** - OpenAI Codex CLI integration
 - **[iflow-cli](examples/iflow-cli/README.md)** - iFLow CLI integration
+- **[langgraph](examples/langgraph/README.md)** - LangGraph integration
+- **[google-adk](examples/google-adk/README.md)** - Google ADK integration
 
 #### 🌐 Browser and Desktop Environments
 
@@ -171,8 +173,10 @@ For more details, please refer to [examples](examples/README.md) and the README 
 | Directory | Description |
 |-----------|-------------|
 | [`server/`](server/README.md) | Python FastAPI sandbox lifecycle server |
-| [`components/execd/`](components/execd/README.md) | Go execution daemon for commands and file operations |
-| [`sdks/`](sdks/) | Multi-language SDKs (Python, Kotlin) |
+| [`components/execd/`](components/execd/README.md) | Sandbox execution daemon (commands and file operations) |
+| [`components/ingress/`](components/ingress/README.md) | Sandbox traffic ingress proxy |
+| [`components/egress/`](components/egress/README.md) | Sandbox network egress control |
+| [`sdks/`](sdks/) | Multi-language SDKs (Python, Java/Kotlin) |
 | [`sandboxes/`](sandboxes/) | Sandbox runtime images (e.g., code-interpreter) |
 | [`kubernetes/`](kubernetes/README.md) | Kubernetes operator and batch sandbox support |
 | [`specs/`](specs/README.md) | OpenAPI specifications |
@@ -180,6 +184,7 @@ For more details, please refer to [examples](examples/README.md) and the README 
 | [`oseps/`](oseps/README.md) | OpenSandbox Enhancement Proposals |
 | [`docs/`](docs/) | Architecture and design documentation |
 | [`tests/`](tests/) | Cross-component E2E tests |
+| [`scripts/`](scripts/) | Development and maintenance scripts |
 
 For detailed architecture, see [docs/architecture.md](docs/architecture.md).
 
@@ -210,6 +215,8 @@ You can use OpenSandbox for personal or commercial projects in compliance with t
 - [x] **OpenSandbox Kubernetes Runtime** - High-performance sandbox scheduling implementation (see [`kubernetes/`](kubernetes/README.md))
 - [ ] **kubernetes-sigs/agent-sandbox Support** - Integration with [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
 - [ ] **Declarative Network Isolation** - Network egress control with allow/deny rules for specific domains (see [OSEP-0001](oseps/0001-fqdn-based-egress-control.md))
+  - [x] DNS-based egress control (Layer 1)
+  - [ ] Network-based egress control (Layer 2)
 
 ## Contact and Discussion
 
