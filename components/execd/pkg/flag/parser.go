@@ -60,7 +60,7 @@ func InitFlags() {
 	if graceShutdownTimeout := os.Getenv(gracefulShutdownTimeoutEnv); graceShutdownTimeout != "" {
 		duration, err := time.ParseDuration(graceShutdownTimeout)
 		if err != nil {
-			log.Panicf("Failed to parse graceful shutdown timeout from env: %v", err)
+			stdlog.Panicf("Failed to parse graceful shutdown timeout from env: %v", err)
 		}
 		ApiGracefulShutdownTimeout = duration
 	}
