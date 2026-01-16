@@ -148,6 +148,7 @@ setup-test-e2e: install-kind ## Set up a Kind cluster for e2e tests if it does n
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind. Use GINKGO_ARGS to pass additional arguments.
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v $(GINKGO_ARGS)
+	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e_task/ -v -ginkgo.v $(GINKGO_ARGS)
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e

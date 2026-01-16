@@ -153,8 +153,6 @@ func (e *processExecutor) executeCommand(task *types.Task, cmd *exec.Cmd, pidPat
 
 	// Apply environment variables from ProcessTask spec
 	if task.Process != nil {
-		// Start with current environment
-		cmd.Env = os.Environ()
 		// Add task-specific environment variables
 		for _, env := range task.Process.Env {
 			if env.Name != "" {
