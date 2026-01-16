@@ -227,6 +227,16 @@ curl -X POST -H "Content-Type: application/json" \
   http://localhost:44772/code
 ```
 
+## Configuration
+
+### API graceful shutdown window
+
+- Env: `EXECD_API_GRACE_SHUTDOWN` (e.g. `500ms`, `2s`, `1m`)
+- Flag: `--graceful-shutdown-timeout`
+- Default: `1s`
+
+This controls how long execd keeps SSE responses (code/command runs) alive after sending the final chunk, so clients can drain tail output before the connection closes. Set to `0s` to disable the grace period.
+
 ## Observability
 
 ### Logging

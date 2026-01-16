@@ -19,4 +19,5 @@ set -euxo pipefail
 source tests/jupyter.sh
 install_jupyter
 
+export EXECD_API_GRACE_SHUTDOWN=500ms
 ./bin/execd -jupyter-host=http://127.0.0.1:${JUPYTER_PORT} --jupyter-token=${JUPYTER_TOKEN} --log-level=7 >execd.log 2>&1 &

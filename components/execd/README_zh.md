@@ -226,6 +226,16 @@ curl -X POST -H "Content-Type: application/json" \
   http://localhost:44772/code
 ```
 
+## 配置
+
+### SSE API 优雅结束时间窗口
+
+- 环境变量：`EXECD_API_GRACE_SHUTDOWN`（如 `500ms`、`2s`、`1m`）
+- 命令行参数：`--graceful-shutdown-timeout`
+- 默认值：`1s`
+
+作用：控制 SSE 响应（代码/命令执行）在发送最后一块数据后，保持连接的宽限时间，方便客户端完全读到尾部输出再关闭。如果设置为 `0s` 则关闭这一等待。
+
 ## 可观测性
 
 ### 日志记录

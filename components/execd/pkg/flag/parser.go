@@ -25,8 +25,9 @@ import (
 )
 
 const (
-	jupyterHostEnv  = "JUPYTER_HOST"
-	jupyterTokenEnv = "JUPYTER_TOKEN"
+	jupyterHostEnv             = "JUPYTER_HOST"
+	jupyterTokenEnv            = "JUPYTER_TOKEN"
+	gracefulShutdownTimeoutEnv = "EXECD_API_GRACE_SHUTDOWN"
 )
 
 // InitFlags registers CLI flags and env overrides.
@@ -35,7 +36,7 @@ func InitFlags() {
 	ServerPort = 44772
 	ServerLogLevel = 6
 	ServerAccessToken = ""
-	ApiGracefulShutdownTimeout = time.Second * 3
+	ApiGracefulShutdownTimeout = time.Second * 1
 
 	// First, set default values from environment variables
 	if jupyterFromEnv := os.Getenv(jupyterHostEnv); jupyterFromEnv != "" {
@@ -55,6 +56,15 @@ func InitFlags() {
 	flag.IntVar(&ServerPort, "port", ServerPort, "Server listening port (default: 44772)")
 	flag.IntVar(&ServerLogLevel, "log-level", ServerLogLevel, "Server log level (0=LevelEmergency, 1=LevelAlert, 2=LevelCritical, 3=LevelError, 4=LevelWarning, 5=LevelNotice, 6=LevelInformational, 7=LevelDebug, default: 6)")
 	flag.StringVar(&ServerAccessToken, "access-token", ServerAccessToken, "Server access token for API authentication")
+
+	if graceShutdownTimeout := os.Getenv(gracefulShutdownTimeoutEnv); graceShutdownTimeout != "" {
+		duration, err := time.ParseDuration(graceShutdownTimeout)
+		if err != nil {
+			log.Panicf("Failed to parse graceful shutdown timeout from env: %v", err)
+		}
+		ApiGracefulShutdownTimeout = duration
+	}
+
 	flag.DurationVar(&ApiGracefulShutdownTimeout, "graceful-shutdown-timeout", ApiGracefulShutdownTimeout, "API graceful shutdown timeout duration (default: 3s)")
 
 	// Parse flags - these will override environment variables if provided
