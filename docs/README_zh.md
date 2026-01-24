@@ -211,7 +211,7 @@ OpenSandbox 提供了丰富的示例来演示不同场景下的沙箱使用方�
 ### Server Runtime
 
 - [x] **自研 Kubernetes 沙箱调度器** - 高性能沙箱调度实现（见 [`kubernetes/`](../kubernetes/README-ZH.md)）
-- [ ] **kubernetes-sigs/agent-sandbox 支持** - 集成 [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) 沙箱调度能力
+- [x] **kubernetes-sigs/agent-sandbox 支持** - 集成 [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) 沙箱调度能力
 - [ ] **声明式网络隔离** - 支持允许/禁止特定域名规则的网络 egress 访问控制（见 [OSEP-0001](../oseps/0001-fqdn-based-egress-control.md)）
   - [x] 基于 DNS 的 Egress 控制（Layer 1）
   - [ ] 基于网络的 Egress 控制（Layer 2）

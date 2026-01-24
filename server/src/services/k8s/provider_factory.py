@@ -22,16 +22,19 @@ from typing import Dict, Type, Optional
 from src.config import KubernetesRuntimeConfig
 from src.services.k8s.workload_provider import WorkloadProvider
 from src.services.k8s.batchsandbox_provider import BatchSandboxProvider
+from src.services.k8s.agent_sandbox_provider import AgentSandboxProvider
 from src.services.k8s.client import K8sClient
 
 logger = logging.getLogger(__name__)
 
 # Provider type constants
 PROVIDER_TYPE_BATCHSANDBOX = "batchsandbox"
+PROVIDER_TYPE_AGENT_SANDBOX = "agent-sandbox"
 
 # Registry of available workload providers
 _PROVIDER_REGISTRY: Dict[str, Type[WorkloadProvider]] = {
     PROVIDER_TYPE_BATCHSANDBOX: BatchSandboxProvider,
+    PROVIDER_TYPE_AGENT_SANDBOX: AgentSandboxProvider,
     # Future providers can be registered here:
     # "pod": PodProvider
 }

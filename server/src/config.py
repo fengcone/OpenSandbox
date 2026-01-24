@@ -114,10 +114,31 @@ class KubernetesRuntimeConfig(BaseModel):
     )
 
 
+class AgentSandboxRuntimeConfig(BaseModel):
+    """Agent-sandbox runtime configuration."""
+
+    template_file: Optional[str] = Field(
+        default=None,
+        description="Path to Sandbox CR YAML template file for agent-sandbox.",
+    )
+    execd_mode: Literal["init", "embedded"] = Field(
+        default="init",
+        description="Execd injection mode: init copies execd into the pod, embedded assumes execd is baked into the image.",
+    )
+    shutdown_policy: Literal["Delete", "Retain"] = Field(
+        default="Delete",
+        description="Shutdown policy applied when a sandbox expires (Delete or Retain).",
+    )
+    ingress_enabled: bool = Field(
+        default=True,
+        description="Whether ingress routing to agent-sandbox pods is expected to be enabled.",
+    )
+
+
 class RuntimeConfig(BaseModel):
     """Runtime selection (docker, kubernetes, etc.)."""
 
-    type: Literal["docker", "kubernetes"] = Field(
+    type: Literal["docker", "kubernetes", "agent-sandbox"] = Field(
         ...,
         description="Active sandbox runtime implementation.",
     )
@@ -180,6 +201,7 @@ class AppConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     runtime: RuntimeConfig = Field(..., description="Sandbox runtime configuration.")
     kubernetes: Optional[KubernetesRuntimeConfig] = None
+    agent_sandbox: Optional["AgentSandboxRuntimeConfig"] = None
     router: Optional[RouterConfig] = None
     docker: DockerConfig = Field(default_factory=DockerConfig)
 
@@ -191,6 +213,11 @@ class AppConfig(BaseModel):
         elif self.runtime.type == "kubernetes":
             if self.kubernetes is None:
                 self.kubernetes = KubernetesRuntimeConfig()
+        elif self.runtime.type == "agent-sandbox":
+            if self.kubernetes is None:
+                self.kubernetes = KubernetesRuntimeConfig()
+            if self.agent_sandbox is None:
+                self.agent_sandbox = AgentSandboxRuntimeConfig()
         else:
             raise ValueError(f"Unsupported runtime type '{self.runtime.type}'.")
         return self
