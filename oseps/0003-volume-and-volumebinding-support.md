@@ -162,38 +162,42 @@ Runtime mapping (Docker):
 - container path: `/mnt/work`
 - accessMode: `RW`
 
-### Example: Python SDK
-Use the Python SDK to create a sandbox with a local path volume mount:
+### Example: Python SDK (lifecycle client)
+Use the Python SDK lifecycle client to create a sandbox with a local path volume mount:
 
 ```python
-from opensandbox import SandboxClient
-from opensandbox.models import ImageSpec, ResourceLimits
+from opensandbox.api.lifecycle.client import AuthenticatedClient
+from opensandbox.api.lifecycle.api.sandboxes import post_sandboxes
+from opensandbox.api.lifecycle.models.create_sandbox_request import CreateSandboxRequest
+from opensandbox.api.lifecycle.models.image_spec import ImageSpec
+from opensandbox.api.lifecycle.models.resource_limits import ResourceLimits
 
-client = SandboxClient(api_key="YOUR_API_KEY")
+client = AuthenticatedClient(base_url="https://api.opensandbox.io", token="YOUR_API_KEY")
 
-request = {
-    "image": ImageSpec(uri="python:3.11"),
-    "timeout": 3600,
-    "resourceLimits": ResourceLimits({"cpu": "500m", "memory": "512Mi"}),
-    "entrypoint": ["python", "-c", "print('hello')"],
-    "volumes": [
-        {
-            "name": "workdir",
-            "backendType": "local",
-            "backendRef": "/data/opensandbox/user-a",
-        }
-    ],
-    "volumeBindings": [
-        {
-            "volumeName": "workdir",
-            "mountPath": "/mnt/work",
-            "accessMode": "RW",
-            "subPath": "task-001",
-        }
-    ],
-}
+resource_limits = ResourceLimits.from_dict({"cpu": "500m", "memory": "512Mi"})
+request = CreateSandboxRequest(
+    image=ImageSpec(uri="python:3.11"),
+    timeout=3600,
+    resource_limits=resource_limits,
+    entrypoint=["python", "-c", "print('hello')"],
+)
+request["volumes"] = [
+    {
+        "name": "workdir",
+        "backendType": "local",
+        "backendRef": "/data/opensandbox/user-a",
+    }
+]
+request["volumeBindings"] = [
+    {
+        "volumeName": "workdir",
+        "mountPath": "/mnt/work",
+        "accessMode": "RW",
+        "subPath": "task-001",
+    }
+]
 
-client.sandboxes.create(**request)
+post_sandboxes.sync(client=client, body=request)
 ```
 
 ### Example: Kubernetes PVC
@@ -230,34 +234,38 @@ containers:
 Python SDK example (PVC):
 
 ```python
-from opensandbox import SandboxClient
-from opensandbox.models import ImageSpec, ResourceLimits
+from opensandbox.api.lifecycle.client import AuthenticatedClient
+from opensandbox.api.lifecycle.api.sandboxes import post_sandboxes
+from opensandbox.api.lifecycle.models.create_sandbox_request import CreateSandboxRequest
+from opensandbox.api.lifecycle.models.image_spec import ImageSpec
+from opensandbox.api.lifecycle.models.resource_limits import ResourceLimits
 
-client = SandboxClient(api_key="YOUR_API_KEY")
+client = AuthenticatedClient(base_url="https://api.opensandbox.io", token="YOUR_API_KEY")
 
-request = {
-    "image": ImageSpec(uri="python:3.11"),
-    "timeout": 3600,
-    "resourceLimits": ResourceLimits({"cpu": "500m", "memory": "512Mi"}),
-    "entrypoint": ["python", "-c", "print('hello')"],
-    "volumes": [
-        {
-            "name": "workdir",
-            "backendType": "pvc",
-            "backendRef": "user-a-pvc",
-        }
-    ],
-    "volumeBindings": [
-        {
-            "volumeName": "workdir",
-            "mountPath": "/mnt/work",
-            "accessMode": "RW",
-            "subPath": "task-001",
-        }
-    ],
-}
+resource_limits = ResourceLimits.from_dict({"cpu": "500m", "memory": "512Mi"})
+request = CreateSandboxRequest(
+    image=ImageSpec(uri="python:3.11"),
+    timeout=3600,
+    resource_limits=resource_limits,
+    entrypoint=["python", "-c", "print('hello')"],
+)
+request["volumes"] = [
+    {
+        "name": "workdir",
+        "backendType": "pvc",
+        "backendRef": "user-a-pvc",
+    }
+]
+request["volumeBindings"] = [
+    {
+        "volumeName": "workdir",
+        "mountPath": "/mnt/work",
+        "accessMode": "RW",
+        "subPath": "task-001",
+    }
+]
 
-client.sandboxes.create(**request)
+post_sandboxes.sync(client=client, body=request)
 ```
 
 ### Provider validation
