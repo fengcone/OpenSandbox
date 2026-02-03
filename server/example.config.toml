@@ -28,6 +28,16 @@ log_level = "INFO"
 api_key = ""
 
 
+[ingress]
+# Ingress exposure mode: tunnel (default) or gateway
+mode = "tunnel"
+# Gateway-only settings (uncomment when mode = "gateway")
+# gateway.address = "https://gateway.opensandbox.io"  # scheme optional; defaults to http when omitted
+# gateway.route.mode = "wildcard"  # wildcard | header | uri
+# gateway.route.header-name = "X-SANDBOX-ID"
+# gateway.route.uri-prefix = "/sandbox"
+
+
 [runtime]
 # Runtime selection (docker | kubernetes)
 # -----------------------------------------------------------------

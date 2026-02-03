@@ -112,6 +112,22 @@ cp example.batchsandbox-template.yaml ~/batchsandbox-template.yaml
    ```
    Further reading on Docker container security: https://docs.docker.com/engine/security/
 
+**Ingress exposure (tunnel | gateway)**
+   ```toml
+   [ingress]
+   mode = "tunnel"  # docker runtime only supports tunnel
+   # gateway.address = "https://*.example.com"  # scheme optional; defaults to http when omitted
+   # gateway.route.mode = "wildcard"            # wildcard | header | uri
+   ```
+   - `mode=tunnel`: default; required when `runtime.type=docker`.
+   - `mode=gateway`: configure external ingress.
+     - `gateway.address`: wildcard domain required when `gateway.route.mode=wildcard`; otherwise must be domain, IP, or IP:port (http/https optional; no userinfo).
+     - `gateway.route.mode`: `wildcard` (host-based wildcard), `header` (header-based), `uri` (path-prefix).
+     - Response format examples:
+       - `wildcard`: `<sandbox-id>-<port>.example.com/path/to/request`
+       - `header`: `10.0.0.1:8000/path/to/request` with header `OPEN-SANDBOX-INGRESS: <sandbox-id>-<port>`
+       - `uri`: `10.0.0.1:8000/<sandbox-id>/<port>/path/to/request`
+
 ### (Optional) Egress sidecar for `networkPolicy`
 
 - Configure the sidecar image (used only when requests include `networkPolicy`):
