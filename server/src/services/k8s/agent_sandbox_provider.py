@@ -262,7 +262,7 @@ class AgentSandboxProvider(WorkloadProvider):
                     return None
                 raise
             except Exception as e:
-                logger.error("Unexpected error getting Sandbox for %s: %s", sandbox_id, e)
+                logger.error(f"Unexpected error getting Sandbox for {sandbox_id}: {e}")
                 raise
 
         return None
@@ -296,7 +296,7 @@ class AgentSandboxProvider(WorkloadProvider):
                 return []
             raise
         except Exception as e:
-            logger.error("Unexpected error listing Sandboxes: %s", e)
+            logger.error(f"Unexpected error listing Sandboxes: {e}")
             raise
 
     def update_expiration(self, sandbox_id: str, namespace: str, expires_at: datetime) -> None:
@@ -329,7 +329,7 @@ class AgentSandboxProvider(WorkloadProvider):
         try:
             return datetime.fromisoformat(shutdown_time_str.replace("Z", "+00:00"))
         except (ValueError, TypeError) as e:
-            logger.warning("Invalid shutdownTime format: %s, error: %s", shutdown_time_str, e)
+            logger.warning(f"Invalid shutdownTime format: {shutdown_time_str}, error: {e}")
             return None
 
     def get_status(self, workload: Dict[str, Any]) -> Dict[str, Any]:
@@ -430,7 +430,7 @@ class AgentSandboxProvider(WorkloadProvider):
                     if pod.status and pod.status.pod_ip and pod.status.phase == "Running":
                         return f"{pod.status.pod_ip}:{port}"
             except Exception as e:
-                logger.warning("Failed to resolve pod endpoint: %s", e)
+                logger.warning(f"Failed to resolve pod endpoint: {e}")
 
         service_fqdn = status.get("serviceFQDN")
         if service_fqdn:
