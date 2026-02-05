@@ -30,18 +30,22 @@ export { ConnectionConfig } from "./config/connection.js";
 export type { ConnectionConfigOptions, ConnectionProtocol } from "./config/connection.js";
 
 export type {
+  AccessMode,
   CreateSandboxRequest,
   CreateSandboxResponse,
   Endpoint,
+  HostBackend,
   ListSandboxesParams,
   ListSandboxesResponse,
   NetworkPolicy,
   NetworkRule,
   NetworkRuleAction,
+  PVCBackend,
   RenewSandboxExpirationRequest,
   RenewSandboxExpirationResponse,
   SandboxId,
   SandboxInfo,
+  Volume,
 } from "./models/sandboxes.js";
 
 export type { Sandboxes } from "./services/sandboxes.js";

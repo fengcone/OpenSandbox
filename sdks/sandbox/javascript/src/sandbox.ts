@@ -36,6 +36,7 @@ import type {
   RenewSandboxExpirationResponse,
   SandboxId,
   SandboxInfo,
+  Volume,
 } from "./models/sandboxes.js";
 import { SandboxReadyTimeoutException } from "./core/exceptions.js";
 
@@ -73,6 +74,11 @@ export interface SandboxCreateOptions {
    * If provided without defaultAction, defaults to "deny".
    */
   networkPolicy?: NetworkPolicy;
+  /**
+   * Optional list of volume mounts for persistent storage.
+   * Each volume specifies a backend (host path or PVC) and mount configuration.
+   */
+  volumes?: Volume[];
   /**
    * Opaque extension parameters passed through to the server as-is.
    */
@@ -244,6 +250,7 @@ export class Sandbox {
             defaultAction: opts.networkPolicy.defaultAction ?? "deny",
           }
         : undefined,
+      volumes: opts.volumes,
       extensions: opts.extensions ?? {},
     };
 

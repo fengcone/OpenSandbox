@@ -312,6 +312,204 @@ class NetworkPolicy private constructor(
     }
 }
 
+// ============================================================================
+// Volume Models
+// ============================================================================
+
+/**
+ * Volume access mode controlling read/write permissions.
+ */
+enum class AccessMode {
+    /** Read-write access */
+    RW,
+
+    /** Read-only access */
+    RO,
+}
+
+/**
+ * Host path bind mount backend.
+ *
+ * Maps a directory on the host filesystem into the container.
+ * Only available when the runtime supports host mounts.
+ *
+ * @property path Absolute path on the host filesystem to mount
+ */
+class HostBackend private constructor(
+    val path: String,
+) {
+    companion object {
+        @JvmStatic
+        fun builder(): Builder = Builder()
+
+        @JvmStatic
+        fun of(path: String): HostBackend = builder().path(path).build()
+    }
+
+    class Builder {
+        private var path: String? = null
+
+        fun path(path: String): Builder {
+            require(path.startsWith("/")) { "Host path must be an absolute path starting with '/'" }
+            this.path = path
+            return this
+        }
+
+        fun build(): HostBackend {
+            val pathValue = path ?: throw IllegalArgumentException("Path must be specified")
+            return HostBackend(path = pathValue)
+        }
+    }
+}
+
+/**
+ * Kubernetes PersistentVolumeClaim mount backend.
+ *
+ * References an existing PVC in the same namespace as the sandbox pod.
+ * Only available in Kubernetes runtime.
+ *
+ * @property claimName Name of the PersistentVolumeClaim in the same namespace
+ */
+class PVCBackend private constructor(
+    val claimName: String,
+) {
+    companion object {
+        @JvmStatic
+        fun builder(): Builder = Builder()
+
+        @JvmStatic
+        fun of(claimName: String): PVCBackend = builder().claimName(claimName).build()
+    }
+
+    class Builder {
+        private var claimName: String? = null
+
+        fun claimName(claimName: String): Builder {
+            require(claimName.isNotBlank()) { "Claim name cannot be blank" }
+            this.claimName = claimName
+            return this
+        }
+
+        fun build(): PVCBackend {
+            val claimNameValue = claimName ?: throw IllegalArgumentException("Claim name must be specified")
+            return PVCBackend(claimName = claimNameValue)
+        }
+    }
+}
+
+/**
+ * Storage mount definition for a sandbox.
+ *
+ * Each volume entry contains:
+ * - A unique name identifier
+ * - Exactly one backend (host, pvc) with backend-specific fields
+ * - Common mount settings (mountPath, accessMode, subPath)
+ *
+ * Example usage:
+ * ```kotlin
+ * // Host path mount
+ * val volume = Volume.builder()
+ *     .name("workdir")
+ *     .host(HostBackend.of("/data/opensandbox"))
+ *     .mountPath("/mnt/work")
+ *     .accessMode(AccessMode.RW)
+ *     .build()
+ *
+ * // PVC mount
+ * val volume = Volume.builder()
+ *     .name("models")
+ *     .pvc(PVCBackend.of("shared-models-pvc"))
+ *     .mountPath("/mnt/models")
+ *     .accessMode(AccessMode.RO)
+ *     .build()
+ * ```
+ *
+ * @property name Unique identifier for the volume within the sandbox
+ * @property host Host path bind mount backend (mutually exclusive with pvc)
+ * @property pvc Kubernetes PVC mount backend (mutually exclusive with host)
+ * @property mountPath Absolute path inside the container where the volume is mounted
+ * @property accessMode Volume access mode (RW or RO)
+ * @property subPath Optional subdirectory under the backend path to mount
+ */
+class Volume private constructor(
+    val name: String,
+    val host: HostBackend?,
+    val pvc: PVCBackend?,
+    val mountPath: String,
+    val accessMode: AccessMode,
+    val subPath: String?,
+) {
+    companion object {
+        @JvmStatic
+        fun builder(): Builder = Builder()
+    }
+
+    class Builder {
+        private var name: String? = null
+        private var host: HostBackend? = null
+        private var pvc: PVCBackend? = null
+        private var mountPath: String? = null
+        private var accessMode: AccessMode? = null
+        private var subPath: String? = null
+
+        fun name(name: String): Builder {
+            require(name.isNotBlank()) { "Volume name cannot be blank" }
+            this.name = name
+            return this
+        }
+
+        fun host(host: HostBackend): Builder {
+            this.host = host
+            return this
+        }
+
+        fun pvc(pvc: PVCBackend): Builder {
+            this.pvc = pvc
+            return this
+        }
+
+        fun mountPath(mountPath: String): Builder {
+            require(mountPath.startsWith("/")) { "Mount path must be an absolute path starting with '/'" }
+            this.mountPath = mountPath
+            return this
+        }
+
+        fun accessMode(accessMode: AccessMode): Builder {
+            this.accessMode = accessMode
+            return this
+        }
+
+        fun subPath(subPath: String): Builder {
+            this.subPath = subPath
+            return this
+        }
+
+        fun build(): Volume {
+            val nameValue = name ?: throw IllegalArgumentException("Name must be specified")
+            val mountPathValue = mountPath ?: throw IllegalArgumentException("Mount path must be specified")
+            val accessModeValue = accessMode ?: throw IllegalArgumentException("Access mode must be specified")
+
+            // Validate exactly one backend is specified
+            val backendsSpecified = listOfNotNull(host, pvc).size
+            if (backendsSpecified == 0) {
+                throw IllegalArgumentException("Exactly one backend (host, pvc) must be specified, but none was provided")
+            }
+            if (backendsSpecified > 1) {
+                throw IllegalArgumentException("Exactly one backend (host, pvc) must be specified, but multiple were provided")
+            }
+
+            return Volume(
+                name = nameValue,
+                host = host,
+                pvc = pvc,
+                mountPath = mountPathValue,
+                accessMode = accessModeValue,
+                subPath = subPath,
+            )
+        }
+    }
+}
+
 /**
  * Detailed information about a sandbox instance.
  *

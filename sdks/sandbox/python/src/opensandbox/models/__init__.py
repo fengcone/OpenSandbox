@@ -37,10 +37,12 @@ from opensandbox.models.filesystem import (
     WriteEntry,
 )
 from opensandbox.models.sandboxes import (
+    HostBackend,
     NetworkPolicy,
     NetworkRule,
     PagedSandboxInfos,
     PaginationInfo,
+    PVCBackend,
     SandboxCreateResponse,
     SandboxEndpoint,
     SandboxFilter,
@@ -50,6 +52,7 @@ from opensandbox.models.sandboxes import (
     SandboxMetrics,
     SandboxState,
     SandboxStatus,
+    Volume,
 )
 
 __all__ = [
@@ -82,4 +85,8 @@ __all__ = [
     "SandboxMetrics",
     "PagedSandboxInfos",
     "PaginationInfo",
+    # Volume models
+    "Volume",
+    "HostBackend",
+    "PVCBackend",
 ]
