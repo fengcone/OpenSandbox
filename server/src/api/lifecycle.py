@@ -41,6 +41,24 @@ from src.api.schema import (
 )
 from src.services.factory import create_sandbox_service
 
+# RFC 2616 Section 13.5.1
+HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+}
+
+# Headers that shouldn't be forwarded to untrusted/internal backends
+SENSITIVE_HEADERS = {
+    "authorization",
+    "cookie",
+}
+
 # Initialize router
 router = APIRouter(tags=["Sandboxes"])
 
@@ -387,9 +405,6 @@ async def get_sandbox_endpoint(
     return sandbox_service.get_endpoint(sandbox_id, port)
 
 
-client = httpx.AsyncClient(timeout=180.0)
-
-
 @router.api_route(
     "/proxy/{endpoint}/{full_path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
@@ -403,18 +418,25 @@ async def proxy_request(request: Request, endpoint: str, full_path: str):
     target_host = f"{endpoint}"
     target_url = f"http://{target_host}/{full_path}"
 
+    client: httpx.AsyncClient = request.app.state.http_client
+
     try:
-        headers = {
-            key: value
-            for (key, value) in request.headers.items()
-            if key.lower() != "host"
-        }
+        # Filter headers
+        headers = {}
+        for key, value in request.headers.items():
+            key_lower = key.lower()
+            if (
+                key_lower != "host"
+                and key_lower not in HOP_BY_HOP_HEADERS
+                and key_lower not in SENSITIVE_HEADERS
+            ):
+                headers[key] = value
 
         req = client.build_request(
             method=request.method,
             url=target_url,
             headers=headers,
-            content=await request.body(),
+            content=request.stream(),
         )
 
         # TODO: support websocket protocol?
