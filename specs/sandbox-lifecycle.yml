@@ -844,6 +844,12 @@ components:
             Public URL to access the service from outside the sandbox.
             Format: {endpoint-host}/sandboxes/{sandboxId}/port/{port}
             Example: endpoint.opensandbox.io/sandboxes/abc123/port/8080
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Requests targeting the sandbox must include the corresponding header(s).
       required:
         - endpoint
       additionalProperties: false
