@@ -28,7 +28,7 @@ BSB_PLURAL = "batchsandboxes"
 NAMESPACE = "default"
 
 class PoolPerformanceTester:
-    def __init__(self, pool_name, pool_size, replicas_per_bsb, total_bsb_count, timeout):
+    def __init__(self, pool_name, pool_size, replicas_per_bsb, total_bsb_count, timeout, poll_interval=0.00001):
         try:
             config.load_kube_config()
         except Exception:
@@ -40,6 +40,7 @@ class PoolPerformanceTester:
         self.replicas_per_bsb = replicas_per_bsb
         self.total_bsb_count = total_bsb_count
         self.timeout = timeout
+        self.poll_interval = poll_interval
         self.bsb_names = []
         self.results = {}
 
@@ -125,12 +126,13 @@ class PoolPerformanceTester:
                 allocated = status.get("allocated", 0)
                 
                 if allocated >= self.replicas_per_bsb:
+                    print("{0}, endpoint {1}".format(name, bsb.get("metadata", {}).get("annotations", {}).get("sandbox.opensandbox.io/endpoints", "")))
                     self.results[name]["allocated_time"] = time.time() - start_polling
                     break
             except Exception as e:
                 pass
             
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(self.poll_interval)
             if time.time() - start_polling > self.timeout:
                 print(f"⏰ Timeout waiting for {name}")
                 break
@@ -194,6 +196,7 @@ if __name__ == "__main__":
     parser.add_argument("--bsb-count", type=int, default=50, help="Number of BatchSandboxes to create concurrently (default: 50)")
     parser.add_argument("--namespace", type=str, default="default", help="Kubernetes namespace (default: default)")
     parser.add_argument("--timeout", type=int, default=120, help="Timeout in seconds for each BatchSandbox allocation (default: 120)")
+    parser.add_argument("--poll-interval", type=float, default=0.00001, help="Poll interval in seconds for checking BatchSandbox status (default: 0.00001)")
     
     args = parser.parse_args()
     
@@ -207,6 +210,7 @@ if __name__ == "__main__":
     print(f"   BSB Count:    {args.bsb_count}")
     print(f"   Namespace:    {args.namespace}")
     print(f"   Timeout:      {args.timeout}s")
+    print(f"   Poll Interval: {args.poll_interval}s")
     print()
     
     tester = PoolPerformanceTester(
@@ -214,7 +218,8 @@ if __name__ == "__main__":
         pool_size=args.pool_size,
         replicas_per_bsb=args.replicas,
         total_bsb_count=args.bsb_count,
-        timeout=args.timeout
+        timeout=args.timeout,
+        poll_interval=args.poll_interval
     )
     try:
         asyncio.run(tester.run())
