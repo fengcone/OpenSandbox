@@ -897,42 +897,6 @@ class TestDockerVolumeValidation:
         assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
         assert exc_info.value.detail["code"] == SandboxErrorCodes.PVC_SUBPATH_UNSUPPORTED_DRIVER
 
-    def test_pvc_subpath_not_found_rejected(self, mock_docker):
-        """PVC with subPath pointing to a non-existent directory should be rejected."""
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = []
-        mock_client.api.inspect_volume.return_value = {
-            "Name": "my-vol",
-            "Driver": "local",
-            "Mountpoint": "/var/lib/docker/volumes/my-vol/_data",
-        }
-        mock_docker.from_env.return_value = mock_client
-
-        service = DockerSandboxService(config=_app_config())
-
-        request = CreateSandboxRequest(
-            image=ImageSpec(uri="python:3.11"),
-            timeout=120,
-            resourceLimits=ResourceLimits(root={}),
-            env={},
-            metadata={},
-            entrypoint=["python"],
-            volumes=[
-                Volume(
-                    name="data",
-                    pvc=PVC(claim_name="my-vol"),
-                    mount_path="/mnt/data",
-                    sub_path="nonexistent/dir",
-                )
-            ],
-        )
-
-        with pytest.raises(HTTPException) as exc_info:
-            service.create_sandbox(request)
-
-        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
-        assert exc_info.value.detail["code"] == SandboxErrorCodes.PVC_SUBPATH_NOT_FOUND
-
     def test_pvc_subpath_binds_resolved_to_mountpoint(self, mock_docker):
         """PVC with subPath should resolve Mountpoint+subPath and pass as bind mount."""
         mock_client = MagicMock()
@@ -967,10 +931,8 @@ class TestDockerVolumeValidation:
             ],
         )
 
-        # Patch os.path.exists to allow the resolved subpath to pass validation
         with patch.object(service, "_ensure_image_available"), \
-             patch.object(service, "_prepare_sandbox_runtime"), \
-             patch("src.services.docker.os.path.exists", return_value=True):
+             patch.object(service, "_prepare_sandbox_runtime"):
             service.create_sandbox(request)
 
         host_config_call = mock_client.api.create_host_config.call_args

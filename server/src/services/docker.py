@@ -1008,7 +1008,9 @@ class DockerSandboxService(SandboxService):
 
         When ``subPath`` is specified, the volume must use the ``local`` driver
         so that the host-side ``Mountpoint`` is a real filesystem path.  The
-        resolved path (``Mountpoint + subPath``) must exist on the host.
+        resolved path (``Mountpoint + subPath``) is validated for path-traversal
+        safety but *not* for existence, because the Mountpoint directory is
+        typically owned by root and may not be stat-able by the server process.
 
         Args:
             volume: Volume with pvc backend.
@@ -1089,18 +1091,13 @@ class DockerSandboxService(SandboxService):
                     },
                 )
 
-            if not os.path.exists(resolved_path):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "code": SandboxErrorCodes.PVC_SUBPATH_NOT_FOUND,
-                        "message": (
-                            f"Volume '{volume.name}': subPath '{volume.sub_path}' does "
-                            f"not exist inside Docker named volume '{volume_name}'. "
-                            "The subdirectory must exist before sandbox creation."
-                        ),
-                    },
-                )
+            # NOTE: We intentionally do NOT check os.path.exists(resolved_path)
+            # here.  Docker volume Mountpoint directories (e.g.,
+            # /var/lib/docker/volumes/…/_data) are typically owned by root and
+            # not readable by the server process.  os.path.exists() returns
+            # False when the process lacks permission to stat the path, causing
+            # false-negative rejections.  If the subPath does not actually
+            # exist, Docker will report the error at container creation time.
 
     def _build_volume_binds(self, volumes: Optional[list]) -> list[str]:
         """
