@@ -23,7 +23,7 @@ concurrency:
 jobs:
   python-e2e:
     name: Python E2E (docker bridge)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -36,6 +36,13 @@ jobs:
       - name: Install uv
         run: |
           pip install uv
+
+      - name: Clean up previous E2E resources
+        run: |
+          # Stop and remove any leftover sandbox containers from previous runs
+          docker ps -aq --filter "label=opensandbox" | xargs -r docker rm -f || true
+          # Remove stale E2E logs
+          rm -rf /tmp/opensandbox-e2e/logs/*
 
       - name: Run tests
         run: |
@@ -72,6 +79,14 @@ jobs:
           name: execd-log-for-python-e2e
           path: /tmp/opensandbox-e2e/logs/
           retention-days: 5
+
+      - name: Clean up after E2E
+        if: always()
+        run: |
+          # Stop sandbox containers created during this run
+          docker ps -aq --filter "label=opensandbox" | xargs -r docker rm -f || true
+          # Kill any leftover server process
+          pkill -f "python -m src.main" || true
 
   java-e2e:
     name: Java E2E (docker bridge)
