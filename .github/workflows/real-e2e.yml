@@ -24,16 +24,16 @@ jobs:
   python-e2e:
     name: Python E2E (docker bridge)
     runs-on: self-hosted
+    env:
+      UV_BIN: /home/admin/.local/bin
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up uv PATH
+      - name: Set up uv PATH and verify
         run: |
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Verify uv and Python
-        run: |
+          echo "${UV_BIN}" >> "$GITHUB_PATH"
+          export PATH="${UV_BIN}:${PATH}"
           uv --version
           uv run python --version
 
