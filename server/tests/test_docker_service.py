@@ -646,14 +646,8 @@ class TestBuildVolumeBinds:
         assert binds == ["shared-models-pvc:/mnt/models:ro"]
 
     def test_pvc_volume_with_subpath(self, mock_docker):
-        """PVC volume with subPath should resolve via Mountpoint and produce bind mount."""
-        mock_client = MagicMock()
-        mock_client.api.inspect_volume.return_value = {
-            "Name": "my-vol",
-            "Driver": "local",
-            "Mountpoint": "/var/lib/docker/volumes/my-vol/_data",
-        }
-        mock_docker.from_env.return_value = mock_client
+        """PVC volume with subPath should resolve via cached Mountpoint and produce bind mount."""
+        mock_docker.from_env.return_value = MagicMock()
         service = DockerSandboxService(config=_app_config())
         volume = Volume(
             name="datasets",
@@ -662,20 +656,21 @@ class TestBuildVolumeBinds:
             read_only=False,
             sub_path="datasets/train",
         )
-        binds = service._build_volume_binds([volume])
+        cache = {
+            "my-vol": {
+                "Name": "my-vol",
+                "Driver": "local",
+                "Mountpoint": "/var/lib/docker/volumes/my-vol/_data",
+            }
+        }
+        binds = service._build_volume_binds([volume], pvc_inspect_cache=cache)
         assert binds == [
             "/var/lib/docker/volumes/my-vol/_data/datasets/train:/mnt/train:rw"
         ]
 
     def test_pvc_volume_with_subpath_readonly(self, mock_docker):
         """PVC volume with subPath and readOnly should produce ':ro' bind mount."""
-        mock_client = MagicMock()
-        mock_client.api.inspect_volume.return_value = {
-            "Name": "my-vol",
-            "Driver": "local",
-            "Mountpoint": "/var/lib/docker/volumes/my-vol/_data",
-        }
-        mock_docker.from_env.return_value = mock_client
+        mock_docker.from_env.return_value = MagicMock()
         service = DockerSandboxService(config=_app_config())
         volume = Volume(
             name="datasets",
@@ -684,7 +679,14 @@ class TestBuildVolumeBinds:
             read_only=True,
             sub_path="datasets/eval",
         )
-        binds = service._build_volume_binds([volume])
+        cache = {
+            "my-vol": {
+                "Name": "my-vol",
+                "Driver": "local",
+                "Mountpoint": "/var/lib/docker/volumes/my-vol/_data",
+            }
+        }
+        binds = service._build_volume_binds([volume], pvc_inspect_cache=cache)
         assert binds == [
             "/var/lib/docker/volumes/my-vol/_data/datasets/eval:/mnt/eval:ro"
         ]
@@ -896,6 +898,49 @@ class TestDockerVolumeValidation:
 
         assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
         assert exc_info.value.detail["code"] == SandboxErrorCodes.PVC_SUBPATH_UNSUPPORTED_DRIVER
+
+    def test_pvc_subpath_symlink_escape_rejected(self, mock_docker):
+        """PVC with subPath that resolves outside mountpoint via symlink should be rejected."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.inspect_volume.return_value = {
+            "Name": "my-vol",
+            "Driver": "local",
+            "Mountpoint": "/var/lib/docker/volumes/my-vol/_data",
+        }
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            env={},
+            metadata={},
+            entrypoint=["python"],
+            volumes=[
+                Volume(
+                    name="data",
+                    pvc=PVC(claim_name="my-vol"),
+                    mount_path="/mnt/data",
+                    sub_path="datasets",
+                )
+            ],
+        )
+
+        # Simulate: realpath resolves a symlink that escapes the mountpoint.
+        # datasets -> / inside the volume, so realpath(…/_data/datasets) = /
+        with patch("src.services.docker.os.path.realpath") as mock_realpath:
+            mock_realpath.side_effect = lambda p: (
+                "/" if p.endswith("datasets") else p
+            )
+            with pytest.raises(HTTPException) as exc_info:
+                service.create_sandbox(request)
+
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_SUB_PATH
+        assert "symlink" in exc_info.value.detail["message"]
 
     def test_pvc_subpath_binds_resolved_to_mountpoint(self, mock_docker):
         """PVC with subPath should resolve Mountpoint+subPath and pass as bind mount."""

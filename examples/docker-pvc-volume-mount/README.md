@@ -28,10 +28,9 @@ This example demonstrates how to mount Docker named volumes into sandbox contain
 ### 1. Start OpenSandbox Server
 
 ```shell
-git clone git@github.com:alibaba/OpenSandbox.git
-cd OpenSandbox/server
-cp example.config.toml ~/.sandbox.toml
-uv sync && uv run python -m src.main
+uv pip install opensandbox-server
+opensandbox-server init-config ~/.sandbox.toml --example docker
+opensandbox-server
 ```
 
 ### 2. Create a Docker Named Volume
@@ -45,19 +44,10 @@ docker run --rm -v opensandbox-pvc-demo:/data alpine \
   sh -c "echo 'hello-from-named-volume' > /data/marker.txt"
 ```
 
-> **Note**: Unlike `host` volumes, `pvc` volumes do not require any `[storage]` configuration on the server side.
-
-### 3. Install SDK from Source
-
-Volume support requires the latest SDK built from source:
+### 3. Install Python SDK
 
 ```shell
-# From the project root (recommended: use uv)
-uv pip install -e sdks/sandbox/python
-
-# Or use pip inside a virtual environment
-# python3 -m venv .venv && source .venv/bin/activate
-# pip install -e sdks/sandbox/python
+uv pip install opensandbox
 ```
 
 ### 4. Pull the Sandbox Image

@@ -657,9 +657,9 @@ class DockerSandboxService(SandboxService):
         ensure_entrypoint(request.entrypoint)
         ensure_metadata_labels(request.metadata)
         self._ensure_network_policy_support(request)
-        self._validate_volumes(request)
+        pvc_inspect_cache = self._validate_volumes(request)
         sandbox_id, created_at, expires_at = self._prepare_creation_context(request)
-        return self._provision_sandbox(sandbox_id, request, created_at, expires_at)
+        return self._provision_sandbox(sandbox_id, request, created_at, expires_at, pvc_inspect_cache)
 
     def _async_provision_worker(
         self,
@@ -822,13 +822,16 @@ class DockerSandboxService(SandboxService):
         request: CreateSandboxRequest,
         created_at: datetime,
         expires_at: datetime,
+        pvc_inspect_cache: Optional[dict[str, dict]] = None,
     ) -> CreateSandboxResponse:
         labels, environment = self._build_labels_and_env(sandbox_id, request, expires_at)
         image_uri, auth_config = self._resolve_image_auth(request, sandbox_id)
         mem_limit, nano_cpus = self._resolve_resource_limits(request)
 
-        # Build volume bind mounts from request volumes
-        volume_binds = self._build_volume_binds(request.volumes)
+        # Build volume bind mounts from request volumes.
+        # pvc_inspect_cache carries Docker volume inspect data from the
+        # validation phase, avoiding a redundant API call.
+        volume_binds = self._build_volume_binds(request.volumes, pvc_inspect_cache)
 
         sidecar_container = None
         host_config_kwargs: Dict[str, Any]
@@ -933,7 +936,7 @@ class DockerSandboxService(SandboxService):
         # Common validation: egress.image must be configured
         ensure_egress_configured(request.network_policy, self.app_config.egress)
 
-    def _validate_volumes(self, request: CreateSandboxRequest) -> None:
+    def _validate_volumes(self, request: CreateSandboxRequest) -> dict[str, dict]:
         """
         Validate volume definitions for Docker runtime.
 
@@ -944,21 +947,31 @@ class DockerSandboxService(SandboxService):
         Args:
             request: Sandbox creation request.
 
+        Returns:
+            A dict mapping PVC volume names (``pvc.claimName``) to their
+            ``docker volume inspect`` results.  Empty when there are no PVC
+            volumes.  This data is passed to ``_build_volume_binds`` so that
+            bind generation does not need a second API call.
+
         Raises:
             HTTPException: When any validation fails.
         """
         if not request.volumes:
-            return
+            return {}
 
         # Shared validation: names, mount paths, sub paths, backend count, host path allowlist
         allowed_prefixes = self.app_config.storage.allowed_host_paths or None
         ensure_volumes_valid(request.volumes, allowed_host_prefixes=allowed_prefixes)
 
+        pvc_inspect_cache: dict[str, dict] = {}
         for volume in request.volumes:
             if volume.host is not None:
                 self._validate_host_volume(volume, allowed_prefixes)
             elif volume.pvc is not None:
-                self._validate_pvc_volume(volume)
+                vol_info = self._validate_pvc_volume(volume)
+                pvc_inspect_cache[volume.pvc.claim_name] = vol_info
+
+        return pvc_inspect_cache
 
     @staticmethod
     def _validate_host_volume(volume, allowed_prefixes: Optional[list[str]]) -> None:
@@ -998,7 +1011,7 @@ class DockerSandboxService(SandboxService):
                 },
             )
 
-    def _validate_pvc_volume(self, volume) -> None:
+    def _validate_pvc_volume(self, volume) -> dict:
         """
         Docker-specific validation for PVC (named volume) backend.
 
@@ -1014,6 +1027,9 @@ class DockerSandboxService(SandboxService):
 
         Args:
             volume: Volume with pvc backend.
+
+        Returns:
+            The ``docker volume inspect`` result dict for the named volume.
 
         Raises:
             HTTPException: When the named volume does not exist, inspection
@@ -1075,11 +1091,22 @@ class DockerSandboxService(SandboxService):
                     },
                 )
 
-            resolved_path = os.path.normpath(
-                os.path.join(mountpoint, volume.sub_path)
+            resolved_path = posixpath.normpath(
+                posixpath.join(mountpoint, volume.sub_path)
             )
-            # Defense in depth: ensure resolved path stays within the mountpoint
-            if not resolved_path.startswith(mountpoint):
+
+            # ── Path-escape check (lexical + symlink) ──
+            #
+            # 1. Lexical check via normpath + path-boundary-aware startswith.
+            #    Use mountpoint + "/" to avoid false positives when one
+            #    mountpoint is a prefix of another (e.g., …/_data vs …/_data2).
+            #    Docker Mountpoint paths are always POSIX, so use "/" directly.
+            mountpoint_prefix = (
+                mountpoint if mountpoint.endswith("/") else mountpoint + "/"
+            )
+            if resolved_path != mountpoint and not resolved_path.startswith(
+                mountpoint_prefix
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail={
@@ -1091,6 +1118,42 @@ class DockerSandboxService(SandboxService):
                     },
                 )
 
+            # 2. Symlink-aware check (best-effort).
+            #    Docker volume Mountpoint dirs are typically root-owned and not
+            #    readable by the server process.  When the path IS accessible,
+            #    resolve symlinks via realpath and re-validate.  When it is NOT
+            #    accessible (OSError / realpath == lexical path because the
+            #    kernel could not traverse), we fall back to the lexical check
+            #    above.  This mitigates symlink-escape attacks (e.g., a
+            #    malicious symlink datasets -> /) when the server has sufficient
+            #    privileges.
+            try:
+                canonical_mountpoint = os.path.realpath(mountpoint)
+                canonical_resolved = os.path.realpath(resolved_path)
+                canonical_prefix = (
+                    canonical_mountpoint
+                    if canonical_mountpoint.endswith("/")
+                    else canonical_mountpoint + "/"
+                )
+                if (
+                    canonical_resolved != canonical_mountpoint
+                    and not canonical_resolved.startswith(canonical_prefix)
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={
+                            "code": SandboxErrorCodes.INVALID_SUB_PATH,
+                            "message": (
+                                f"Volume '{volume.name}': resolved subPath escapes "
+                                f"the volume mountpoint after symlink resolution."
+                            ),
+                        },
+                    )
+            except OSError:
+                # Cannot access volume paths (expected for non-root server).
+                # Lexical validation above is still enforced.
+                pass
+
             # NOTE: We intentionally do NOT check os.path.exists(resolved_path)
             # here.  Docker volume Mountpoint directories (e.g.,
             # /var/lib/docker/volumes/…/_data) are typically owned by root and
@@ -1099,7 +1162,13 @@ class DockerSandboxService(SandboxService):
             # false-negative rejections.  If the subPath does not actually
             # exist, Docker will report the error at container creation time.
 
-    def _build_volume_binds(self, volumes: Optional[list]) -> list[str]:
+        return vol_info
+
+    def _build_volume_binds(
+        self,
+        volumes: Optional[list],
+        pvc_inspect_cache: Optional[dict[str, dict]] = None,
+    ) -> list[str]:
         """
         Convert Volume definitions into Docker bind/volume mount specs.
 
@@ -1110,15 +1179,19 @@ class DockerSandboxService(SandboxService):
           Format (no subPath): ``volume-name:/container/path:ro|rw``
           Docker recognises non-absolute-path sources as named volume references.
           Format (with subPath): ``/var/lib/docker/volumes/…/subdir:/container/path:ro|rw``
-          When subPath is specified, the volume's host Mountpoint is resolved via
-          ``docker volume inspect`` and the subPath is appended, producing a
-          standard bind mount.
+          When subPath is specified, the volume's host Mountpoint (obtained from
+          ``pvc_inspect_cache``) is used to produce a standard bind mount.
 
         Each mount string uses ``:ro`` for read-only and ``:rw`` for read-write
         (default).
 
         Args:
             volumes: List of Volume objects from the creation request.
+            pvc_inspect_cache: Dict mapping PVC claimNames to their
+                ``docker volume inspect`` results, populated by
+                ``_validate_volumes``.  Avoids a redundant API call and
+                eliminates the race window between validation and bind
+                generation.
 
         Returns:
             List of Docker bind/volume mount strings.
@@ -1126,6 +1199,7 @@ class DockerSandboxService(SandboxService):
         if not volumes:
             return []
 
+        cache = pvc_inspect_cache or {}
         binds: list[str] = []
         for volume in volumes:
             container_path = volume.mount_path
@@ -1145,13 +1219,12 @@ class DockerSandboxService(SandboxService):
                     # Resolve the named volume's host-side Mountpoint and append
                     # the subPath to produce a regular bind mount.  Validation
                     # has already ensured the driver is "local" and the resolved
-                    # path exists.
-                    vol_info = self.docker_client.api.inspect_volume(
-                        volume.pvc.claim_name
-                    )
-                    mountpoint = vol_info["Mountpoint"]
-                    resolved = os.path.normpath(
-                        os.path.join(mountpoint, volume.sub_path)
+                    # path is safe.  Reuse cached inspect data to avoid a
+                    # redundant Docker API call and potential race condition.
+                    vol_info = cache.get(volume.pvc.claim_name, {})
+                    mountpoint = vol_info.get("Mountpoint", "")
+                    resolved = posixpath.normpath(
+                        posixpath.join(mountpoint, volume.sub_path)
                     )
                     binds.append(f"{resolved}:{container_path}:{mode}")
                 else:

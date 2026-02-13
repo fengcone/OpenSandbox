@@ -28,10 +28,9 @@
 ### 1. 启动 OpenSandbox 服务
 
 ```shell
-git clone git@github.com:alibaba/OpenSandbox.git
-cd OpenSandbox/server
-cp example.config.zh.toml ~/.sandbox.toml
-uv sync && uv run python -m src.main
+uv pip install opensandbox-server
+opensandbox-server init-config ~/.sandbox.toml --example docker
+opensandbox-server
 ```
 
 ### 2. 创建 Docker 命名卷
@@ -45,19 +44,10 @@ docker run --rm -v opensandbox-pvc-demo:/data alpine \
   sh -c "echo 'hello-from-named-volume' > /data/marker.txt"
 ```
 
-> **提示**：与 `host` 卷不同，`pvc` 卷不需要在服务端进行任何 `[storage]` 配置。
-
-### 3. 从源码安装 SDK
-
-Volume 功能需要从源码安装最新版 SDK：
+### 3. 安装 Python SDK
 
 ```shell
-# 在项目根目录下执行（推荐使用 uv）
-uv pip install -e sdks/sandbox/python
-
-# 或者使用 pip（需要在虚拟环境中执行）
-# python3 -m venv .venv && source .venv/bin/activate
-# pip install -e sdks/sandbox/python
+uv pip install opensandbox
 ```
 
 ### 4. 拉取沙箱镜像
