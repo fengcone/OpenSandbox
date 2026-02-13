@@ -157,23 +157,41 @@ jobs:
 
   javascript-e2e:
     name: JavaScript E2E (docker bridge)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    env:
+      UV_BIN: /home/admin/.local/bin
+      NODE_VERSION: "20.19.0"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+      - name: Set up uv PATH and verify
+        run: |
+          echo "${UV_BIN}" >> "$GITHUB_PATH"
+          export PATH="${UV_BIN}:${PATH}"
+          uv --version
+          uv run python --version
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
+      - name: Set up Node.js
+        run: |
+          NODE_DIR="/home/admin/.local/node-v${NODE_VERSION}-linux-x64"
+          if [ -x "${NODE_DIR}/bin/node" ]; then
+            echo "Node.js ${NODE_VERSION} already cached"
+          else
+            echo "Downloading Node.js ${NODE_VERSION}..."
+            mkdir -p /home/admin/.local
+            curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+              | tar -xJ -C /home/admin/.local/
+          fi
+          echo "${NODE_DIR}/bin" >> "$GITHUB_PATH"
+          export PATH="${NODE_DIR}/bin:${PATH}"
+          node --version
+          npm --version
 
-      - name: Install uv
-        run: pip install uv
+      - name: Clean up previous E2E resources
+        run: |
+          docker ps -aq --filter "label=opensandbox" | xargs -r docker rm -f || true
+          rm -rf /tmp/opensandbox-e2e/logs/*
 
       - name: Run tests
         run: |
@@ -218,3 +236,9 @@ jobs:
           name: execd-log-for-js-e2e
           path: /tmp/opensandbox-e2e/logs/
           retention-days: 5
+
+      - name: Clean up after E2E
+        if: always()
+        run: |
+          docker ps -aq --filter "label=opensandbox" | xargs -r docker rm -f || true
+          pkill -f "python -m src.main" || true
