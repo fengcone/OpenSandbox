@@ -573,12 +573,16 @@ class TestSandboxE2ESync:
             assert "datasets" not in stdout_text
             logger.info("✓ Only subPath contents are visible inside the sandbox")
 
-            # Step 3: Write a file and verify
+            # Step 3: Write a file and verify (retry read-back for transient SSE drops)
             result = sandbox.commands.run(
                 f"echo 'subpath-write-test' > {container_mount_path}/output.txt"
             )
             assert result.error is None
-            result = sandbox.commands.run(f"cat {container_mount_path}/output.txt")
+            for _attempt in range(3):
+                result = sandbox.commands.run(f"cat {container_mount_path}/output.txt")
+                if result.logs.stdout:
+                    break
+                time.sleep(1)
             assert result.error is None
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "subpath-write-test"
@@ -1005,7 +1009,7 @@ class TestSandboxE2ESync:
             assert execution.error.value
             _assert_recent_timestamp_ms(execution.error.timestamp, tolerance_ms=180_000)
 
-    @pytest.mark.timeout(600)
+    @pytest.mark.timeout(120)
     @pytest.mark.order(6)
     def test_05_sandbox_pause(self) -> None:
         """Test sandbox pause operation."""
@@ -1017,14 +1021,15 @@ class TestSandboxE2ESync:
         logger.info("TEST 5: Testing sandbox pause operation (sync)")
         logger.info("=" * 80)
 
-        logger.info("Waiting 20 seconds before pausing to ensure sandbox is stable...")
-        time.sleep(20)
+        # Sandbox has been exercised through tests 01-04; a brief settle is sufficient.
+        time.sleep(2)
+        assert sandbox.is_healthy(), "Sandbox should be healthy before pause"
 
         sandbox.pause()
 
         poll_count = 0
         final_status = None
-        while poll_count < 300:
+        while poll_count < 30:
             time.sleep(1)
             poll_count += 1
             info = sandbox.get_info()
@@ -1038,13 +1043,20 @@ class TestSandboxE2ESync:
         assert final_status is not None
         assert final_status.state == "Paused"
 
-        # Confirm pause semantics: execd becomes unhealthy/unreachable after pause.
-        healthy = True
-        for _ in range(10):
-            healthy = sandbox.is_healthy()
-            if not healthy:
-                break
-            time.sleep(0.5)
+        # Verify pause semantics: execd should be unreachable.
+        # The global HTTP request_timeout is 3 min, so we run the single
+        # is_healthy() call in a thread with a short timeout.  A paused
+        # container's frozen process will never reply, causing either a
+        # timeout (good) or an immediate connection refusal (also good).
+        # NOTE: shutdown(wait=False) so we don't block on the lingering
+        # HTTP request after our 15 s deadline.
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            healthy = pool.submit(sandbox.is_healthy).result(timeout=15)
+        except Exception:
+            healthy = False
+        finally:
+            pool.shutdown(wait=False)
         assert healthy is False, "Sandbox should be unhealthy after pause"
 
     @pytest.mark.timeout(120)

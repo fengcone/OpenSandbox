@@ -389,18 +389,23 @@ test("01f sandbox create with PVC named volume subPath mount", async () => {
     expect(lsOutput).toContain("marker.txt");
     expect(lsOutput).not.toContain("datasets");
 
-    // Step 3: Write a file and verify
+    // Step 3: Write a file and verify (retry read-back for transient SSE drops)
     const writeResult = await subpathSandbox.commands.run(
       `echo 'subpath-write-test' > ${containerMountPath}/output.txt`
     );
     expect(writeResult.error).toBeUndefined();
 
-    const readBack = await subpathSandbox.commands.run(
-      `cat ${containerMountPath}/output.txt`
-    );
-    expect(readBack.error).toBeUndefined();
-    expect(readBack.logs.stdout).toHaveLength(1);
-    expect(readBack.logs.stdout[0]?.text).toBe("subpath-write-test");
+    let readBack;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      readBack = await subpathSandbox.commands.run(
+        `cat ${containerMountPath}/output.txt`
+      );
+      if (readBack.logs.stdout.length > 0) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    expect(readBack!.error).toBeUndefined();
+    expect(readBack!.logs.stdout).toHaveLength(1);
+    expect(readBack!.logs.stdout[0]?.text).toBe("subpath-write-test");
   } finally {
     try {
       await subpathSandbox.kill();

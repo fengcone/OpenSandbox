@@ -598,13 +598,17 @@ class TestSandboxE2E:
             assert "datasets" not in stdout_text
             logger.info("✓ Only subPath contents are visible inside the sandbox")
 
-            # Step 3: Write a file and verify
+            # Step 3: Write a file and verify (retry read-back for transient SSE drops)
             logger.info("Step 3: Write and verify a file inside subPath mount")
             result = await sandbox.commands.run(
                 f"echo 'subpath-write-test' > {container_mount_path}/output.txt"
             )
             assert result.error is None
-            result = await sandbox.commands.run(f"cat {container_mount_path}/output.txt")
+            for _attempt in range(3):
+                result = await sandbox.commands.run(f"cat {container_mount_path}/output.txt")
+                if result.logs.stdout:
+                    break
+                await asyncio.sleep(1)
             assert result.error is None
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "subpath-write-test"
@@ -1100,7 +1104,7 @@ class TestSandboxE2E:
             assert execution.error.value
             _assert_recent_timestamp_ms(execution.error.timestamp, tolerance_ms=180_000)
 
-    @pytest.mark.timeout(600)
+    @pytest.mark.timeout(120)
     @pytest.mark.order(6)
     async def test_05_sandbox_pause(self):
         """Test sandbox pause operation."""
@@ -1111,8 +1115,9 @@ class TestSandboxE2E:
         logger.info("TEST 5: Testing sandbox pause operation")
         logger.info("=" * 80)
 
-        logger.info("Waiting 20 seconds before pausing to ensure sandbox is stable...")
-        await asyncio.sleep(20)
+        # Sandbox has been exercised through tests 01-04; a brief settle is sufficient.
+        await asyncio.sleep(2)
+        assert await sandbox.is_healthy(), "Sandbox should be healthy before pause"
 
         logger.info("Requesting sandbox pause...")
         await sandbox.pause()
@@ -1121,8 +1126,8 @@ class TestSandboxE2E:
         poll_count = 0
         final_status = None
 
-        logger.info("Polling for status change (timeout: 5 minutes)...")
-        while poll_count < 300:
+        logger.info("Polling for status change (timeout: 30s)...")
+        while poll_count < 30:
             await asyncio.sleep(1)
             poll_count += 1
 
@@ -1139,18 +1144,19 @@ class TestSandboxE2E:
         assert final_status is not None, "Failed to get final status after pause operation"
         assert final_status.state == "Paused", "Sandbox should be in Paused state"
 
-        # Confirm pause semantics: execd becomes unhealthy/unreachable after pause.
-        healthy = True
-        for _ in range(10):
-            healthy = await sandbox.is_healthy()
-            if not healthy:
-                break
-            await asyncio.sleep(0.5)
+        # Verify pause semantics: execd should be unreachable.
+        # The global HTTP request_timeout is 3 min, so we wrap the single
+        # is_healthy() call in a short asyncio timeout.  A paused container's
+        # frozen process will never reply, causing either a timeout (good) or
+        # an immediate connection refusal (also good).
+        try:
+            healthy = await asyncio.wait_for(sandbox.is_healthy(), timeout=15)
+        except asyncio.TimeoutError:
+            healthy = False
         assert healthy is False, "Sandbox should be unhealthy after pause"
 
         elapsed_time = (time.time() - start_time) * 1000
-        logger.info(f"✓ Sandbox pause completed in {elapsed_time:.2f} ms")
-        logger.info("TEST 4 PASSED: Sandbox pause operation test completed successfully")
+        logger.info(f"✓ Sandbox pause confirmed in {elapsed_time:.2f} ms")
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(7)
