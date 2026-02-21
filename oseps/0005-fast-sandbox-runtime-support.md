@@ -334,30 +334,38 @@ Total: 2-5s (best case, cache hit)
 
 #### 2. Registry Scheduling Algorithm
 
-```python
-# From fast-sandbox internal/controller/agentpool/registry.go
+```go
+// From fast-sandbox internal/controller/agentpool/registry.go (simplified)
 
-def Allocate(sandbox) -> AgentInfo:
-    candidates = []
+func Allocate(sandbox *Sandbox) (*AgentInfo, error) {
+    bestSlot := nil
+    minScore := 1000000
 
-    for agent in registry.agents:
-        # Filter by pool, namespace, capacity
-        if agent.pool_ref != sandbox.pool_ref:
+    for _, agent := range registry.agents {
+        // Skip if pool/namespace mismatch or at capacity
+        if agent.PoolName != sandbox.PoolRef ||
+           agent.Namespace != sandbox.Namespace ||
+           agent.Allocated >= agent.Capacity {
             continue
-        if agent.namespace != sandbox.namespace:
-            continue
-        if agent.allocated >= agent.capacity:
-            continue
-        if not agent.has_available_port(sandbox.ports):
-            continue
+        }
+        // Check port conflicts 
+		if contains(agent.UsedPorts, sandbox.ExposedPorts) {
+			continue
+        }
+        // Score: prefer lower allocation + cached image
+        score := agent.Allocated
+        if !contains(agent.Images, sandbox.Image) {
+            score += 1000  // Heavy penalty for uncached image
+        }
 
-        # Score calculation
-        image_cached = agent.has_image(sandbox.image)
-        score = agent.allocated + (0 if image_cached else 1000)
-        candidates.append((agent, score))
+        if score < minScore {
+            minScore = score
+            bestSlot = agent
+        }
+    }
 
-    # Select lowest score (prefers cached images)
-    return min(candidates, key=lambda x: x[1])[0]
+    return bestSlot, nil
+}
 ```
 
 **Performance characteristics** (from fast-sandbox benchmarks):
