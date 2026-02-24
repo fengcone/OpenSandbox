@@ -146,7 +146,7 @@ setup-test-e2e: install-kind ## Set up a Kind cluster for e2e tests if it does n
 	esac
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind. Use GINKGO_ARGS to pass additional arguments.
+test-e2e: setup-test-e2e manifests generate fmt vet install-e2e-deps ## Run the e2e tests. Expected an isolated environment using Kind. Use GINKGO_ARGS to pass additional arguments.
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v $(GINKGO_ARGS)
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e_task/ -v -ginkgo.v $(GINKGO_ARGS)
 	$(MAKE) cleanup-test-e2e
@@ -154,6 +154,95 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+
+# Common E2E setup targets - install CRDs and controller for any Kind cluster
+.PHONY: install-e2e-deps
+install-e2e-deps:
+	@echo "Installing OpenSandbox CRDs..."
+	@$(MAKE) install
+	@echo "Installing OpenSandbox controller..."
+	@cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
+	@$(KUSTOMIZE) build config/default | kubectl apply -f -
+	@echo "Waiting for controller to be ready..."
+	@kubectl wait --for=condition=available --timeout=120s deployment -n sandbox-k8s-system sandbox-k8s-controller-manager || \
+		kubectl describe deployment -n sandbox-k8s-system sandbox-k8s-controller-manager
+
+# RuntimeClass E2E testing - gVisor
+GVISOR_KIND_CLUSTER ?= gvisor-test
+GVISOR_KIND_IMAGE ?= kindest/node:v1.27.3
+
+.PHONY: setup-gvisor
+setup-gvisor: ## Set up Kind cluster with gVisor (runsc) for e2e tests
+	@echo "Creating gVisor Kind cluster with runsc binaries from kubernetes/test/kind/gvisor/..."
+	@export GVISOR_KIND_CLUSTER=$(GVISOR_KIND_CLUSTER) && \
+		export GVISOR_KIND_IMAGE=$(GVISOR_KIND_IMAGE) && \
+		export PWD=$$(pwd) && \
+		envsubst < test/kind/runtimeclass/gvisor.yaml.tmpl | \
+		$(KIND) create cluster --config -
+	@echo "Creating runsc.toml on Kind nodes..."
+	@for node in $$(docker ps --filter "name=$(GVISOR_KIND_CLUSTER)-" --format "{{.Names}}"); do \
+		docker exec $$node sh -c 'mkdir -p /etc/containerd && echo "[runsc]" > /etc/containerd/runsc.toml && echo "  platform = \"ptrace\"" >> /etc/containerd/runsc.toml'; \
+	done
+
+.PHONY: cleanup-gvisor
+cleanup-gvisor: ## Tear down gVisor Kind cluster
+	@$(KIND) delete cluster --name $(GVISOR_KIND_CLUSTER) 2>/dev/null || true
+
+# install-gvisor-deps installs CRDs and controller for gVisor tests
+.PHONY: install-gvisor-deps
+install-gvisor-deps:
+	@echo "Building and loading controller image into gVisor Kind cluster..."
+	@$(MAKE) docker-build-controller
+	@$(KIND) load docker-image --name $(GVISOR_KIND_CLUSTER) $(IMG)
+	@$(MAKE) install-e2e-deps
+
+.PHONY: test-gvisor
+test-gvisor: setup-gvisor install-gvisor-deps ## Run gVisor RuntimeClass e2e tests
+	@echo "Installing gVisor RuntimeClass resources..."
+	@kubectl apply -f test/e2e_runtime/gvisor/testdata/runtimeclass.yaml
+	@echo "Running gVisor E2E tests..."
+	KIND_CLUSTER=$(GVISOR_KIND_CLUSTER) go test ./test/e2e_runtime/gvisor -v -ginkgo.v $(GINKGO_ARGS)
+	$(MAKE) cleanup-gvisor
+
+# RuntimeClass E2E testing - Kata Containers
+KATA_KIND_CLUSTER ?= kata-test
+KATA_KIND_IMAGE ?= kindest/node:v1.28.0
+KATA_RUNTIME_PATH ?= /usr/bin/kata-runtime
+
+.PHONY: setup-kata
+setup-kata: ## Set up Kind cluster with Kata Containers for e2e tests
+	@echo "Creating Kata Kind cluster with kata-runtime at $(KATA_RUNTIME_PATH)..."
+	@export KATA_KIND_CLUSTER=$(KATA_KIND_CLUSTER) && \
+		export KATA_KIND_IMAGE=$(KATA_KIND_IMAGE) && \
+		export KATA_RUNTIME_PATH=$(KATA_RUNTIME_PATH) && \
+		envsubst < test/kind/runtimeclass/kata.yaml.tmpl | \
+		$(KIND) create cluster --config -
+
+.PHONY: cleanup-kata
+cleanup-kata: ## Tear down Kata Kind cluster
+	@$(KIND) delete cluster --name $(KATA_KIND_CLUSTER) 2>/dev/null || true
+
+# install-kata-deps installs CRDs and controller for Kata tests
+.PHONY: install-kata-deps
+install-kata-deps:
+	@echo "Building and loading controller image into Kata Kind cluster..."
+	@$(MAKE) docker-build-controller
+	@$(KIND) load docker-image --name $(KATA_KIND_CLUSTER) $(IMG)
+	@$(MAKE) install-e2e-deps
+
+.PHONY: test-kata
+test-kata: setup-kata install-kata-deps ## Run Kata RuntimeClass e2e tests
+	@echo "Installing Kata RuntimeClass resources..."
+	@kubectl apply -f test/e2e_runtime/kata/testdata/runtimeclass.yaml
+	@echo "Running Kata E2E tests..."
+	KIND_CLUSTER=$(KATA_KIND_CLUSTER) go test ./test/e2e_runtime/kata -v -ginkgo.v $(GINKGO_ARGS)
+	$(MAKE) cleanup-kata
+
+.PHONY: test-all-runtimeclass
+test-all-runtimeclass: ## Run all RuntimeClass e2e tests (gVisor, Kata, etc.)
+	$(MAKE) test-gvisor
+	$(MAKE) test-kata
+
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
