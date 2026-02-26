@@ -21,13 +21,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/netip"
 	"strings"
 	"time"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
+	"github.com/alibaba/opensandbox/egress/pkg/log"
 	"github.com/alibaba/opensandbox/egress/pkg/nftables"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 )
@@ -72,7 +72,7 @@ func startPolicyServer(ctx context.Context, proxy policyUpdater, nft nftApplier,
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("policy server shutdown error: %v", err)
+			log.Warnf("policy server shutdown error: %v", err)
 		}
 	}()
 
@@ -90,7 +90,7 @@ func startPolicyServer(ctx context.Context, proxy policyUpdater, nft nftApplier,
 		// assume healthy start; keep logging future errors
 		go func() {
 			if err := <-errCh; err != nil {
-				log.Printf("policy server error: %v", err)
+				log.Errorf("policy server error: %v", err)
 			}
 		}()
 		return nil

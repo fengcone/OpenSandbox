@@ -16,13 +16,13 @@ package main
 
 import (
 	"context"
-	"log"
 	"net/netip"
 	"os"
 	"strings"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/dnsproxy"
+	"github.com/alibaba/opensandbox/egress/pkg/log"
 	"github.com/alibaba/opensandbox/egress/pkg/nftables"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 )
@@ -45,10 +45,10 @@ func setupNft(ctx context.Context, nftMgr nftApplier, initialPolicy *policy.Netw
 	if err := nftMgr.ApplyStatic(ctx, policyWithNS); err != nil {
 		log.Fatalf("nftables static apply failed: %v", err)
 	}
-	log.Printf("nftables static policy applied (table inet opensandbox)")
+	log.Infof("nftables static policy applied (table inet opensandbox)")
 	proxy.SetOnResolved(func(domain string, ips []nftables.ResolvedIP) {
 		if err := nftMgr.AddResolvedIPs(ctx, ips); err != nil {
-			log.Printf("[dns] add resolved IPs to nft failed: %v", err)
+			log.Warnf("[dns] add resolved IPs to nft failed: %v", err)
 		}
 	})
 }
@@ -81,7 +81,7 @@ func parseNftOptions() nftables.Options {
 				}
 				continue
 			}
-			log.Printf("ignoring invalid DoH blocklist entry: %s", target)
+			log.Warnf("ignoring invalid DoH blocklist entry: %s", target)
 		}
 	}
 	return opts

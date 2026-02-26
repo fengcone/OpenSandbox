@@ -35,6 +35,11 @@ BASELINE_IMG="${BASELINE_IMG:-curlimages/curl:latest}"
 CONTAINER_NAME="egress-bench-e2e"
 POLICY_PORT=18080
 ROUNDS=10
+# Optional: where to write egress logs on host. Override via LOG_HOST_DIR / LOG_FILE.
+LOG_HOST_DIR="${LOG_HOST_DIR:-/tmp/egress-logs}"
+LOG_FILE="${LOG_FILE:-egress.log}"
+LOG_CONTAINER_DIR="/var/log/opensandbox"
+LOG_CONTAINER_FILE="${LOG_CONTAINER_DIR}/${LOG_FILE}"
 
 # Load benchmark domains from hostname.txt (one domain per line).
 if [[ ! -f "${HOSTNAME_FILE}" ]] || [[ ! -s "${HOSTNAME_FILE}" ]]; then
@@ -209,11 +214,14 @@ run_phase() {
   local mode="$1"
   info "Phase: ${mode}"
   cleanup
+  mkdir -p "${LOG_HOST_DIR}"
   docker run -d --name "${CONTAINER_NAME}" \
     --cap-add=NET_ADMIN \
     --sysctl net.ipv6.conf.all.disable_ipv6=1 \
     --sysctl net.ipv6.conf.default.disable_ipv6=1 \
     -e OPENSANDBOX_EGRESS_MODE="${mode}" \
+    -e OPENSANDBOX_LOG_OUTPUT="${LOG_CONTAINER_FILE}" \
+    -v "${LOG_HOST_DIR}:${LOG_CONTAINER_DIR}" \
     -p "${POLICY_PORT}:18080" \
     "${IMG}"
 

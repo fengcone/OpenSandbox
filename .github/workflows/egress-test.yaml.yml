@@ -23,14 +23,14 @@ jobs:
           go-version: '1.24.0'
 
       - name: Run Build
+        working-directory: components/egress
         run: |
-          cd components/egress
           go vet ./...
           go build .
 
       - name: Run tests
+        working-directory: components/egress
         run: |
-          cd components/egress
           go test ./...
 
   smoke:
@@ -70,3 +70,8 @@ jobs:
           ./tests/bench-dns-nft.sh
         env:
           BENCH_SAMPLE_SIZE: "20"
+
+      - name: Eval bench logs
+        if: always()
+        run: |
+          cat /tmp/egress-logs
