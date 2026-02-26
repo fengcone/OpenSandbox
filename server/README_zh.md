@@ -141,7 +141,7 @@ mode = "direct"  # Docker 运行时仅支持 direct（直连，无 L7 网关）
   - 返回示例：
     - `wildcard`：`<sandbox-id>-<port>.example.com/path/to/request`
     - `uri`：`10.0.0.1:8000/<sandbox-id>/<port>/path/to/request`
-    - `header`：`gateway.example.com`，请求头 `OPEN-SANDBOX-INGRESS: <sandbox-id>-<port>`
+    - `header`：`gateway.example.com`，请求头 `OpenSandbox-Ingress-To: <sandbox-id>-<port>`
 
 **Kubernetes 运行时**
    ```toml

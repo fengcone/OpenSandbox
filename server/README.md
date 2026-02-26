@@ -140,7 +140,7 @@ Before you start the server, edit the configuration file to suit your environmen
      - Response format examples:
        - `wildcard`: `<sandbox-id>-<port>.example.com/path/to/request`
        - `uri`: `10.0.0.1:8000/<sandbox-id>/<port>/path/to/request`
-       - `header`: `gateway.example.com` with header `OPEN-SANDBOX-INGRESS: <sandbox-id>-<port>`
+       - `header`: `gateway.example.com` with header `OpenSandbox-Ingress-To: <sandbox-id>-<port>`
 
 **Kubernetes runtime**
    ```toml
