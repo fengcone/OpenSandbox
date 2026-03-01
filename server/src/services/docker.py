@@ -40,7 +40,7 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 import docker
-from docker.errors import DockerException, ImageNotFound
+from docker.errors import DockerException, ImageNotFound, NotFound as DockerNotFound
 from fastapi import HTTPException, status
 
 from src.api.schema import (
@@ -84,20 +84,9 @@ from src.services.validators import (
 logger = logging.getLogger(__name__)
 
 
-def _resolve_docker_timeout(default: int = 180) -> int:
-    env_value = os.environ.get("DOCKER_API_TIMEOUT")
-    if not env_value:
-        return default
-    try:
-        timeout = int(env_value)
-        if timeout <= 0:
-            raise ValueError
-        return timeout
-    except ValueError:
-        logger.warning(
-            "Invalid DOCKER_API_TIMEOUT='%s'; falling back to %s seconds.", env_value, default
-        )
-        return default
+def _running_inside_docker_container() -> bool:
+    """Return True if the current process is running inside a Docker container."""
+    return os.path.exists("/.dockerenv")
 
 
 OPENSANDBOX_DIR = "/opt/opensandbox"
@@ -109,7 +98,6 @@ BOOTSTRAP_PATH = posixpath.join(OPENSANDBOX_DIR, "bootstrap.sh")
 HOST_NETWORK_MODE = "host"
 BRIDGE_NETWORK_MODE = "bridge"
 PENDING_FAILURE_TTL_SECONDS = int(os.environ.get("PENDING_FAILURE_TTL", "3600"))
-DOCKER_CLIENT_TIMEOUT = _resolve_docker_timeout()
 EGRESS_RULES_ENV = "OPENSANDBOX_EGRESS_RULES"
 EGRESS_SIDECAR_LABEL = "opensandbox.io/egress-sidecar-for"
 
@@ -152,13 +140,14 @@ class DockerSandboxService(SandboxService):
         if self.network_mode not in {HOST_NETWORK_MODE, BRIDGE_NETWORK_MODE}:
             raise ValueError(f"Unsupported Docker network_mode '{self.network_mode}'.")
         self._execd_archive_cache: Optional[bytes] = None
+        self._api_timeout = self._resolve_api_timeout()
         try:
             # Initialize Docker service from environment variables
             client_kwargs = {}
             try:
                 signature = inspect.signature(docker.from_env)
                 if "timeout" in signature.parameters:
-                    client_kwargs["timeout"] = DOCKER_CLIENT_TIMEOUT
+                    client_kwargs["timeout"] = self._api_timeout
             except (ValueError, TypeError):
                 logger.debug(
                     "Unable to introspect docker.from_env signature; using default parameters."
@@ -166,7 +155,7 @@ class DockerSandboxService(SandboxService):
             self.docker_client = docker.from_env(**client_kwargs)
             if not client_kwargs:
                 try:
-                    self.docker_client.api.timeout = DOCKER_CLIENT_TIMEOUT
+                    self.docker_client.api.timeout = self._api_timeout
                 except AttributeError:
                     logger.debug("Docker client API does not expose timeout attribute.")
             logger.info("Docker service initialized from environment")
@@ -198,6 +187,13 @@ class DockerSandboxService(SandboxService):
         self._pending_lock = Lock()
         self._pending_cleanup_timers: Dict[str, Timer] = {}
         self._restore_existing_sandboxes()
+
+    def _resolve_api_timeout(self) -> int:
+        """Docker API timeout in seconds: [docker].api_timeout if set, else default 180."""
+        cfg = self.app_config.docker.api_timeout
+        if cfg is not None and cfg >= 1:
+            return cfg
+        return 180
 
     @contextmanager
     def _docker_operation(self, action: str, sandbox_id: Optional[str] = None):
@@ -657,9 +653,9 @@ class DockerSandboxService(SandboxService):
         ensure_entrypoint(request.entrypoint)
         ensure_metadata_labels(request.metadata)
         self._ensure_network_policy_support(request)
-        self._validate_volumes(request)
+        pvc_inspect_cache = self._validate_volumes(request)
         sandbox_id, created_at, expires_at = self._prepare_creation_context(request)
-        return self._provision_sandbox(sandbox_id, request, created_at, expires_at)
+        return self._provision_sandbox(sandbox_id, request, created_at, expires_at, pvc_inspect_cache)
 
     def _async_provision_worker(
         self,
@@ -667,9 +663,10 @@ class DockerSandboxService(SandboxService):
         request: CreateSandboxRequest,
         created_at: datetime,
         expires_at: datetime,
+        pvc_inspect_cache: Optional[dict[str, dict]] = None,
     ) -> None:
         try:
-            self._provision_sandbox(sandbox_id, request, created_at, expires_at)
+            self._provision_sandbox(sandbox_id, request, created_at, expires_at, pvc_inspect_cache)
         except HTTPException as exc:
             message = exc.detail.get("message") if isinstance(exc.detail, dict) else str(exc)
             self._mark_pending_failed(sandbox_id, message or "Sandbox provisioning failed.")
@@ -822,13 +819,16 @@ class DockerSandboxService(SandboxService):
         request: CreateSandboxRequest,
         created_at: datetime,
         expires_at: datetime,
+        pvc_inspect_cache: Optional[dict[str, dict]] = None,
     ) -> CreateSandboxResponse:
         labels, environment = self._build_labels_and_env(sandbox_id, request, expires_at)
         image_uri, auth_config = self._resolve_image_auth(request, sandbox_id)
         mem_limit, nano_cpus = self._resolve_resource_limits(request)
 
-        # Build volume bind mounts from request volumes
-        volume_binds = self._build_volume_binds(request.volumes)
+        # Build volume bind mounts from request volumes.
+        # pvc_inspect_cache carries Docker volume inspect data from the
+        # validation phase, avoiding a redundant API call.
+        volume_binds = self._build_volume_binds(request.volumes, pvc_inspect_cache)
 
         sidecar_container = None
         host_config_kwargs: Dict[str, Any]
@@ -933,7 +933,7 @@ class DockerSandboxService(SandboxService):
         # Common validation: egress.image must be configured
         ensure_egress_configured(request.network_policy, self.app_config.egress)
 
-    def _validate_volumes(self, request: CreateSandboxRequest) -> None:
+    def _validate_volumes(self, request: CreateSandboxRequest) -> dict[str, dict]:
         """
         Validate volume definitions for Docker runtime.
 
@@ -944,21 +944,31 @@ class DockerSandboxService(SandboxService):
         Args:
             request: Sandbox creation request.
 
+        Returns:
+            A dict mapping PVC volume names (``pvc.claimName``) to their
+            ``docker volume inspect`` results.  Empty when there are no PVC
+            volumes.  This data is passed to ``_build_volume_binds`` so that
+            bind generation does not need a second API call.
+
         Raises:
             HTTPException: When any validation fails.
         """
         if not request.volumes:
-            return
+            return {}
 
         # Shared validation: names, mount paths, sub paths, backend count, host path allowlist
         allowed_prefixes = self.app_config.storage.allowed_host_paths or None
         ensure_volumes_valid(request.volumes, allowed_host_prefixes=allowed_prefixes)
 
+        pvc_inspect_cache: dict[str, dict] = {}
         for volume in request.volumes:
             if volume.host is not None:
                 self._validate_host_volume(volume, allowed_prefixes)
             elif volume.pvc is not None:
-                self._validate_pvc_volume(volume)
+                vol_info = self._validate_pvc_volume(volume)
+                pvc_inspect_cache[volume.pvc.claim_name] = vol_info
+
+        return pvc_inspect_cache
 
     @staticmethod
     def _validate_host_volume(volume, allowed_prefixes: Optional[list[str]]) -> None:
@@ -998,63 +1008,234 @@ class DockerSandboxService(SandboxService):
                 },
             )
 
-    @staticmethod
-    def _validate_pvc_volume(volume) -> None:
+    def _validate_pvc_volume(self, volume) -> dict:
         """
-        Docker-specific validation for PVC volumes — always rejected.
+        Docker-specific validation for PVC (named volume) backend.
 
-        PVC is only available in Kubernetes runtime.
+        In Docker runtime, the ``pvc`` backend maps to a Docker named volume.
+        ``pvc.claimName`` is used as the Docker volume name.  The volume must
+        already exist (created via ``docker volume create``).
+
+        When ``subPath`` is specified, the volume must use the ``local`` driver
+        so that the host-side ``Mountpoint`` is a real filesystem path.  The
+        resolved path (``Mountpoint + subPath``) is validated for path-traversal
+        safety but *not* for existence, because the Mountpoint directory is
+        typically owned by root and may not be stat-able by the server process.
 
         Args:
             volume: Volume with pvc backend.
 
+        Returns:
+            The ``docker volume inspect`` result dict for the named volume.
+
         Raises:
-            HTTPException: Always, since Docker does not support PVC.
+            HTTPException: When the named volume does not exist, inspection
+                fails, or subPath constraints are violated.
         """
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": SandboxErrorCodes.UNSUPPORTED_VOLUME_BACKEND,
-                "message": (
-                    f"Volume '{volume.name}' uses 'pvc' backend which is not supported "
-                    "in Docker runtime. PVC is only available in Kubernetes runtime."
-                ),
-            },
-        )
+        volume_name = volume.pvc.claim_name
+        try:
+            vol_info = self.docker_client.api.inspect_volume(volume_name)
+        except DockerNotFound:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": SandboxErrorCodes.PVC_VOLUME_NOT_FOUND,
+                    "message": (
+                        f"Volume '{volume.name}': Docker named volume '{volume_name}' "
+                        "does not exist. Named volumes must be created before sandbox "
+                        "creation (e.g., 'docker volume create <name>')."
+                    ),
+                },
+            )
+        except DockerException as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.PVC_VOLUME_INSPECT_FAILED,
+                    "message": (
+                        f"Volume '{volume.name}': failed to inspect Docker named volume "
+                        f"'{volume_name}': {exc}"
+                    ),
+                },
+            ) from exc
 
-    @staticmethod
-    def _build_volume_binds(volumes: Optional[list]) -> list[str]:
+        # --- subPath validation for Docker named volumes ---
+        if volume.sub_path:
+            driver = vol_info.get("Driver", "")
+            if driver != "local":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": SandboxErrorCodes.PVC_SUBPATH_UNSUPPORTED_DRIVER,
+                        "message": (
+                            f"Volume '{volume.name}': subPath is only supported for "
+                            f"Docker named volumes using the 'local' driver, but "
+                            f"volume '{volume_name}' uses driver '{driver}'."
+                        ),
+                    },
+                )
+
+            mountpoint = vol_info.get("Mountpoint", "")
+            if not mountpoint:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": SandboxErrorCodes.PVC_SUBPATH_UNSUPPORTED_DRIVER,
+                        "message": (
+                            f"Volume '{volume.name}': cannot resolve subPath because "
+                            f"Docker named volume '{volume_name}' has no Mountpoint."
+                        ),
+                    },
+                )
+
+            resolved_path = posixpath.normpath(
+                posixpath.join(mountpoint, volume.sub_path)
+            )
+
+            # ── Path-escape check (lexical + symlink) ──
+            #
+            # 1. Lexical check via normpath + path-boundary-aware startswith.
+            #    Use mountpoint + "/" to avoid false positives when one
+            #    mountpoint is a prefix of another (e.g., …/_data vs …/_data2).
+            #    Docker Mountpoint paths are always POSIX, so use "/" directly.
+            mountpoint_prefix = (
+                mountpoint if mountpoint.endswith("/") else mountpoint + "/"
+            )
+            if resolved_path != mountpoint and not resolved_path.startswith(
+                mountpoint_prefix
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": SandboxErrorCodes.INVALID_SUB_PATH,
+                        "message": (
+                            f"Volume '{volume.name}': resolved subPath escapes the "
+                            f"volume mountpoint."
+                        ),
+                    },
+                )
+
+            # 2. Symlink-aware check (best-effort).
+            #    Docker volume Mountpoint dirs are typically root-owned and not
+            #    readable by the server process.  Using strict=True so that
+            #    realpath raises OSError when it cannot traverse a directory
+            #    instead of silently returning the unresolved lexical path
+            #    (which would make this check a no-op).  When the path IS
+            #    accessible, this detects symlink-escape attacks (e.g., a
+            #    malicious symlink datasets -> /).
+            try:
+                canonical_mountpoint = os.path.realpath(
+                    mountpoint, strict=True
+                )
+                canonical_resolved = os.path.realpath(
+                    resolved_path, strict=True
+                )
+                # os.path.realpath returns OS-native separators, so use
+                # os.sep here (unlike the lexical check above which operates
+                # on POSIX-normalised Docker Mountpoint strings).
+                canonical_prefix = (
+                    canonical_mountpoint
+                    if canonical_mountpoint.endswith(os.sep)
+                    else canonical_mountpoint + os.sep
+                )
+                if (
+                    canonical_resolved != canonical_mountpoint
+                    and not canonical_resolved.startswith(canonical_prefix)
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={
+                            "code": SandboxErrorCodes.INVALID_SUB_PATH,
+                            "message": (
+                                f"Volume '{volume.name}': resolved subPath escapes "
+                                f"the volume mountpoint after symlink resolution."
+                            ),
+                        },
+                    )
+            except OSError:
+                # Cannot access volume paths (expected for non-root server).
+                # Lexical validation above is still enforced; the symlink
+                # check is skipped because we cannot resolve the real paths.
+                pass
+
+            # NOTE: We intentionally do NOT check os.path.exists(resolved_path)
+            # here.  Docker volume Mountpoint directories (e.g.,
+            # /var/lib/docker/volumes/…/_data) are typically owned by root and
+            # not readable by the server process.  os.path.exists() returns
+            # False when the process lacks permission to stat the path, causing
+            # false-negative rejections.  If the subPath does not actually
+            # exist, Docker will report the error at container creation time.
+
+        return vol_info
+
+    def _build_volume_binds(
+        self,
+        volumes: Optional[list],
+        pvc_inspect_cache: Optional[dict[str, dict]] = None,
+    ) -> list[str]:
         """
-        Convert Volume definitions with host backend into Docker bind mount specs.
+        Convert Volume definitions into Docker bind/volume mount specs.
 
-        Each bind mount is formatted as:
-            host_path:container_path:ro  (for read-only)
-            host_path:container_path:rw  (for read-write, default)
+        Supported backends:
+        - ``host``: host path bind mount.
+          Format: ``/host/path:/container/path:ro|rw``
+        - ``pvc``: Docker named volume mount.
+          Format (no subPath): ``volume-name:/container/path:ro|rw``
+          Docker recognises non-absolute-path sources as named volume references.
+          Format (with subPath): ``/var/lib/docker/volumes/…/subdir:/container/path:ro|rw``
+          When subPath is specified, the volume's host Mountpoint (obtained from
+          ``pvc_inspect_cache``) is used to produce a standard bind mount.
 
-        The host path is resolved by combining host.path with the optional subPath.
+        Each mount string uses ``:ro`` for read-only and ``:rw`` for read-write
+        (default).
 
         Args:
             volumes: List of Volume objects from the creation request.
+            pvc_inspect_cache: Dict mapping PVC claimNames to their
+                ``docker volume inspect`` results, populated by
+                ``_validate_volumes``.  Avoids a redundant API call and
+                eliminates the race window between validation and bind
+                generation.
 
         Returns:
-            List of Docker bind mount strings.
+            List of Docker bind/volume mount strings.
         """
         if not volumes:
             return []
 
+        cache = pvc_inspect_cache or {}
         binds: list[str] = []
         for volume in volumes:
-            if volume.host is None:
-                continue
-
-            # Resolve the concrete host path (host.path + optional subPath)
-            host_path = volume.host.path
-            if volume.sub_path:
-                host_path = os.path.normpath(os.path.join(host_path, volume.sub_path))
-
             container_path = volume.mount_path
             mode = "ro" if volume.read_only else "rw"
-            binds.append(f"{host_path}:{container_path}:{mode}")
+
+            if volume.host is not None:
+                # Resolve the concrete host path (host.path + optional subPath)
+                host_path = volume.host.path
+                if volume.sub_path:
+                    host_path = os.path.normpath(
+                        os.path.join(host_path, volume.sub_path)
+                    )
+                binds.append(f"{host_path}:{container_path}:{mode}")
+
+            elif volume.pvc is not None:
+                if volume.sub_path:
+                    # Resolve the named volume's host-side Mountpoint and append
+                    # the subPath to produce a regular bind mount.  Validation
+                    # has already ensured the driver is "local" and the resolved
+                    # path is safe.  Reuse cached inspect data to avoid a
+                    # redundant Docker API call and potential race condition.
+                    vol_info = cache.get(volume.pvc.claim_name, {})
+                    mountpoint = vol_info.get("Mountpoint", "")
+                    resolved = posixpath.normpath(
+                        posixpath.join(mountpoint, volume.sub_path)
+                    )
+                    binds.append(f"{resolved}:{container_path}:{mode}")
+                else:
+                    # No subPath: use claimName directly as Docker volume ref.
+                    binds.append(
+                        f"{volume.pvc.claim_name}:{container_path}:{mode}"
+                    )
 
         return binds
 
@@ -1361,10 +1542,19 @@ class DockerSandboxService(SandboxService):
             },
         )
 
+    def _get_docker_host_ip(self) -> Optional[str]:
+        """When running inside a container, return [docker].host_ip for endpoint URLs (if set)."""
+        ip = (self.app_config.docker.host_ip or "").strip()
+        return ip or None
+
     def _resolve_public_host(self) -> str:
         host_cfg = (self.app_config.server.host or "").strip()
         host_key = host_cfg.lower()
         if host_key in {"", "0.0.0.0", "::"}:
+            if _running_inside_docker_container():
+                host_ip = self._get_docker_host_ip()
+                if host_ip:
+                    return host_ip
             return self._resolve_bind_ip(socket.AF_INET)
         return host_cfg
 

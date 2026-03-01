@@ -133,6 +133,8 @@ dist
 # Gatsby files
 .cache/
 public
+!docs/public/
+!docs/public/CNAME
 
 # Serverless directories
 .serverless/
@@ -270,3 +272,5 @@ generated/
 # gVisor runtime binaries (downloaded dynamically)
 kubernetes/test/kind/gvisor/runsc
 kubernetes/test/kind/gvisor/containerd-shim-runsc-v1
+bin/
+obj/

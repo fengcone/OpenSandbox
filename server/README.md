@@ -126,6 +126,22 @@ Before you start the server, edit the configuration file to suit your environmen
    ```
    Further reading on Docker container security: https://docs.docker.com/engine/security/
 
+**Ingress exposure (direct | gateway)**
+   ```toml
+   [ingress]
+   mode = "direct"  # docker runtime only supports direct
+   # gateway.address = "*.example.com"         # host only (domain or IP[:port]); scheme is not allowed
+   # gateway.route.mode = "wildcard"            # wildcard | uri | header
+   ```
+   - `mode=direct`: default; required when `runtime.type=docker` (client ↔ sandbox direct reachability, no L7 gateway).
+   - `mode=gateway`: configure external ingress.
+     - `gateway.address`: wildcard domain required when `gateway.route.mode=wildcard`; otherwise must be domain, IP, or IP:port. Do not include scheme; clients decide http/https.
+     - `gateway.route.mode`: `wildcard` (host-based wildcard), `uri` (path-prefix), `header` (header-based routing).
+     - Response format examples:
+       - `wildcard`: `<sandbox-id>-<port>.example.com/path/to/request`
+       - `uri`: `10.0.0.1:8000/<sandbox-id>/<port>/path/to/request`
+       - `header`: `gateway.example.com` with header `OpenSandbox-Ingress-To: <sandbox-id>-<port>`
+
 **Kubernetes runtime**
    ```toml
    [runtime]
@@ -152,7 +168,7 @@ Before you start the server, edit the configuration file to suit your environmen
    execd_image = "opensandbox/execd:v1.0.6"
    
    [egress]
-   image = "opensandbox/egress:v1.0.0"
+   image = "opensandbox/egress:v1.0.1"
    ```
 - Supported only in Docker bridge mode; requests with `networkPolicy` are rejected when `network_mode=host` or when `egress.image` is not configured.
 - Main container shares the sidecar netns and explicitly drops `NET_ADMIN`; the sidecar keeps `NET_ADMIN` to manage iptables.
@@ -412,7 +428,6 @@ curl -X DELETE \
 |----------|-------------|
 | `SANDBOX_CONFIG_PATH` | Override config file location |
 | `DOCKER_HOST` | Docker daemon URL (e.g., `unix:///var/run/docker.sock`) |
-| `DOCKER_API_TIMEOUT` | Docker client timeout in seconds (default: 180) |
 | `PENDING_FAILURE_TTL` | TTL for failed pending sandboxes in seconds (default: 3600) |
 
 ## Development

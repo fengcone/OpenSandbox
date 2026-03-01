@@ -183,7 +183,7 @@ await sandbox.files.write_files([
     WriteEntry(
         path="/tmp/hello.txt",
         data="Hello World",
-        mode=0o644
+        mode=644
     )
 ])
 
@@ -210,7 +210,7 @@ await sandbox.files.delete_files(["/tmp/hello.txt"])
 Use `SandboxManager` for administrative tasks and finding existing sandboxes.
 
 ```python
-from opensandbox.sandbox import SandboxManager
+from opensandbox.manager import SandboxManager
 from opensandbox.models.sandboxes import SandboxFilter
 
 # Create manager using async context manager

@@ -355,9 +355,10 @@ class TestAgentSandboxProvider:
             "metadata": {"namespace": "test-ns"},
         }
 
-        endpoint = provider.get_endpoint_info(workload, 8080)
+        endpoint = provider.get_endpoint_info(workload, 8080, "sandbox-123")
 
-        assert endpoint == "10.0.0.9:8080"
+        assert endpoint.endpoint == "10.0.0.9:8080"
+        assert endpoint.headers is None
 
     def test_get_endpoint_info_falls_back_to_service_fqdn(self, mock_k8s_client):
         """
@@ -371,9 +372,10 @@ class TestAgentSandboxProvider:
             "metadata": {"namespace": "test-ns"},
         }
 
-        endpoint = provider.get_endpoint_info(workload, 9000)
+        endpoint = provider.get_endpoint_info(workload, 9000, "sandbox-123")
 
-        assert endpoint == "svc.example.com:9000"
+        assert endpoint.endpoint == "svc.example.com:9000"
+        assert endpoint.headers is None
 
 
 class TestAgentSandboxProviderEgress:
@@ -442,7 +444,7 @@ class TestAgentSandboxProviderEgress:
             expires_at=expires_at,
             execd_image="execd:latest",
             network_policy=network_policy,
-            egress_image="opensandbox/egress:v1.0.0",
+            egress_image="opensandbox/egress:v1.0.1",
         )
 
         body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
@@ -455,7 +457,7 @@ class TestAgentSandboxProviderEgress:
         # Find sidecar container
         sidecar = next((c for c in containers if c["name"] == "egress"), None)
         assert sidecar is not None
-        assert sidecar["image"] == "opensandbox/egress:v1.0.0"
+        assert sidecar["image"] == "opensandbox/egress:v1.0.1"
         
         # Verify sidecar has environment variable
         env_vars = {e["name"]: e["value"] for e in sidecar.get("env", [])}
@@ -494,7 +496,7 @@ class TestAgentSandboxProviderEgress:
             expires_at=expires_at,
             execd_image="execd:latest",
             network_policy=network_policy,
-            egress_image="opensandbox/egress:v1.0.0",
+            egress_image="opensandbox/egress:v1.0.1",
         )
 
         body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
@@ -543,7 +545,7 @@ class TestAgentSandboxProviderEgress:
             expires_at=expires_at,
             execd_image="execd:latest",
             network_policy=network_policy,
-            egress_image="opensandbox/egress:v1.0.0",
+            egress_image="opensandbox/egress:v1.0.1",
         )
 
         body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
@@ -628,7 +630,7 @@ class TestAgentSandboxProviderEgress:
             expires_at=expires_at,
             execd_image="execd:latest",
             network_policy=network_policy,
-            egress_image="opensandbox/egress:v1.0.0",
+            egress_image="opensandbox/egress:v1.0.1",
         )
 
         body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]

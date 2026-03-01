@@ -5,6 +5,10 @@ on:
     branches: [ main ]
     paths:
       - 'components/egress/**'
+      - 'components/internal/**'
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -15,29 +19,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.24.0'
 
       - name: Run Build
+        working-directory: components/egress
         run: |
-          cd components/egress
           go vet ./...
           go build .
 
       - name: Run tests
+        working-directory: components/egress
         run: |
-          cd components/egress
           go test ./...
 
   smoke:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Run dns test
         working-directory: components/egress
@@ -50,3 +54,31 @@ jobs:
         run: |
           chmod +x tests/smoke-nft.sh
           ./tests/smoke-nft.sh
+
+      - name: Run dynamic ip test
+        working-directory: components/egress
+        run: |
+          chmod +x tests/smoke-dynamic-ip.sh
+          ./tests/smoke-dynamic-ip.sh
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Run bench test
+        working-directory: components/egress
+        run: |
+          chmod +x tests/bench-dns-nft.sh
+          ./tests/bench-dns-nft.sh
+        env:
+          BENCH_SAMPLE_SIZE: "20"
+
+      - name: Upload egress logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: egress-log-for-bench
+          path: /tmp/egress-logs/
+          retention-days: 5

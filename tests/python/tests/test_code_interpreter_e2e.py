@@ -116,6 +116,7 @@ async def run_with_retry(
     handlers=None,
     max_retries: int = 3,
     retry_delay: float = 2.0,
+    per_call_timeout: float = 120.0,
 ):
     """
     Run code with retry logic for flaky kernel initialization and network errors.
@@ -123,17 +124,21 @@ async def run_with_retry(
     Returns the execution result, retrying on:
     - Empty/None id responses (kernel not ready)
     - Network errors (connection reset, server disconnected)
+    - Per-call timeout (SSE stream hangs due to peer disconnect)
     """
     last_result = None
     last_exception = None
 
     for attempt in range(max_retries):
         try:
-            result = await code_interpreter.codes.run(
-                code,
-                context=context,
-                language=language,
-                handlers=handlers,
+            result = await asyncio.wait_for(
+                code_interpreter.codes.run(
+                    code,
+                    context=context,
+                    language=language,
+                    handlers=handlers,
+                ),
+                timeout=per_call_timeout,
             )
             last_result = result
             if result is not None and result.id is not None:
@@ -146,6 +151,22 @@ async def run_with_retry(
                 )
                 await asyncio.sleep(retry_delay)
                 retry_delay *= 1.5  # exponential backoff
+        except asyncio.TimeoutError:
+            last_exception = TimeoutError(
+                f"codes.run() did not complete within {per_call_timeout}s"
+            )
+            if attempt < max_retries - 1:
+                logger.warning(
+                    "Execution timed out after %.0fs (attempt %d/%d), retrying in %.1fs...",
+                    per_call_timeout, attempt + 1, max_retries, retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 1.5
+            else:
+                logger.error(
+                    "Execution timed out after %.0fs on final attempt %d/%d",
+                    per_call_timeout, attempt + 1, max_retries,
+                )
         except Exception as e:
             last_exception = e
             error_name = type(e).__name__
@@ -153,7 +174,7 @@ async def run_with_retry(
             error_str = str(e).lower()
             is_retryable = any(keyword in error_str for keyword in [
                 "disconnected", "connection", "reset", "closed", "timeout",
-                "remoteerror", "protocol", "peer closed"
+                "remoteerror", "protocol", "peer closed", "session is busy",
             ])
             if is_retryable and attempt < max_retries - 1:
                 logger.warning(
@@ -440,7 +461,9 @@ class TestCodeInterpreterE2E:
                 on_init=on_init,
             )
 
-            simple_result = await code_interpreter.codes.run(
+            # Use retry for first execution in context (Java kernel init can be slow)
+            simple_result = await run_with_retry(
+                code_interpreter,
                 "System.out.println(\"Hello from Java!\");\n"
                 + "int result = 2 + 2;\n"
                 + "System.out.println(\"2 + 2 = \" + result);\n"
@@ -527,7 +550,9 @@ class TestCodeInterpreterE2E:
 
         # New usage: directly pass a language string (ephemeral context).
         # This validates the `codes.run(..., language=...)` convenience interface.
-        direct_lang_result = await code_interpreter.codes.run(
+        # Use retry helper for the first call — kernel initialization can be flaky.
+        direct_lang_result = await run_with_retry(
+            code_interpreter,
             "result = 2 + 2\nresult",
             language=SupportedLanguage.PYTHON,
         )
@@ -577,7 +602,9 @@ class TestCodeInterpreterE2E:
             assert python_context.id is not None and python_context.id.strip()
             logger.info("✓ Python context created")
 
-            simple_result_py = await code_interpreter.codes.run(
+            # Use retry for first execution in context (kernel init can be flaky)
+            simple_result_py = await run_with_retry(
+                code_interpreter,
                 "print('Hello from Python!')\n"
                 + "result = 2 + 2\n"
                 + "print(f'2 + 2 = {result}')",
@@ -725,7 +752,9 @@ class TestCodeInterpreterE2E:
                 on_init=on_init,
             )
 
-            simple_result_go = await code_interpreter.codes.run(
+            # Use retry for first execution in context (Go compile can be slow)
+            simple_result_go = await run_with_retry(
+                code_interpreter,
                 "package main\n"
                 + "import \"fmt\"\n"
                 + "func main() {\n"
@@ -842,7 +871,9 @@ class TestCodeInterpreterE2E:
                 on_init=on_init,
             )
 
-            simple_result_ts = await code_interpreter.codes.run(
+            # Use retry for first execution in context (TS init can be slow)
+            simple_result_ts = await run_with_retry(
+                code_interpreter,
                 "console.log('Hello from TypeScript!');\n"
                 + "const result: number = 2 + 2;\n"
                 + "console.log(`2 + 2 = ${result}`);",

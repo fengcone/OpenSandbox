@@ -4,7 +4,7 @@ authors:
   - "@hittyt"
 creation-date: 2026-02-05
 last-updated: 2026-02-09
-status: implementable
+status: implementing
 ---
 
 # OSEP-0004: Pluggable Secure Container Runtime Support
