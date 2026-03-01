@@ -155,6 +155,7 @@ OpenSandbox provides rich examples demonstrating sandbox usage in different scen
 - **[claude-code](examples/claude-code/README.md)** - Run Claude Code inside OpenSandbox.
 - **[gemini-cli](examples/gemini-cli/README.md)** - Run Google Gemini CLI inside OpenSandbox.
 - **[codex-cli](examples/codex-cli/README.md)** - Run OpenAI Codex CLI inside OpenSandbox.
+- **[kimi-cli](examples/kimi-cli/README.md)** - Run [Kimi CLI](https://github.com/MoonshotAI/kimi-cli) (Moonshot AI) inside OpenSandbox.
 - **[iflow-cli](examples/iflow-cli/README.md)** - Run iFLow CLI inside OpenSandbox.
 - **[langgraph](examples/langgraph/README.md)** - LangGraph state-machine workflow that creates/runs a sandbox job with fallback retry.
 - **[google-adk](examples/google-adk/README.md)** - Google ADK agent using OpenSandbox tools to write/read files and run commands.

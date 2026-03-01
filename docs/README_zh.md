@@ -152,11 +152,12 @@ OpenSandbox 提供了丰富的示例来演示不同场景下的沙箱使用方�
 
 #### 🤖 Coding Agent 集成
 
-在 OpenSandbox 中，集成各类 Coding Agent，包括 Claude Code、Google Gemini、OpenAI Codex 等。
+在 OpenSandbox 中，集成各类 Coding Agent，包括 Claude Code、Google Gemini、OpenAI Codex、Kimi CLI 等。
 
 - **[claude-code](../examples/claude-code/README.md)** - 在 OpenSandbox 中运行 Claude Code。
 - **[gemini-cli](../examples/gemini-cli/README.md)** - 在 OpenSandbox 中运行 Google Gemini CLI。
 - **[codex-cli](../examples/codex-cli/README.md)** - 在 OpenSandbox 中运行 OpenAI Codex CLI。
+- **[kimi-cli](../examples/kimi-cli/README.md)** - 在 OpenSandbox 中运行 [Kimi CLI](https://github.com/MoonshotAI/kimi-cli)（Moonshot AI）。
 - **[iflow-cli](../examples/iflow-cli/README.md)** - 在 OpenSandbox 中运行 iFlow CLI。
 - **[langgraph](../examples/langgraph/README.md)** - 基于 LangGraph 状态机编排沙箱任务与回退重试。
 - **[google-adk](../examples/google-adk/README.md)** - 使用 Google ADK 通过 OpenSandbox 工具读写文件并执行命令。
