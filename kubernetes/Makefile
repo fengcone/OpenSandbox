@@ -167,19 +167,35 @@ install-e2e-deps:
 	@$(KUSTOMIZE) build config/default | kubectl apply -f -
 	@echo "Waiting for controller to be ready..."
 	@kubectl wait --for=condition=available --timeout=120s deployment -n sandbox-k8s-system sandbox-k8s-controller-manager || \
-		kubectl describe deployment -n sandbox-k8s-system sandbox-k8s-controller-manager
+		{ kubectl describe deployment -n sandbox-k8s-system sandbox-k8s-controller-manager; exit 1; }
 
 # RuntimeClass E2E testing - gVisor
 GVISOR_KIND_CLUSTER ?= gvisor-test
 GVISOR_KIND_IMAGE ?= kindest/node:v1.27.3
 
+# gVisor versions
+GVISOR_VERSION ?= 20260112
+GVISOR_RUNSC_BIN ?= $(shell pwd)/test/kind/gvisor/runsc
+GVISOR_SHIM_BIN ?= $(shell pwd)/test/kind/gvisor/containerd-shim-runsc-v1
+
+.PHONY: download-gvisor
+download-gvisor: ## Download gVisor runsc and containerd-shim-runsc-v1 binaries
+	@echo "Downloading gVisor runsc (release-$(GVISOR_VERSION))..."
+	@mkdir -p $(dir $(GVISOR_RUNSC_BIN))
+	@wget -q "https://storage.googleapis.com/gvisor/releases/release/$(GVISOR_VERSION)/$$(uname -m)/runsc" -O $(GVISOR_RUNSC_BIN)
+	@chmod +x $(GVISOR_RUNSC_BIN)
+	@echo "Downloading containerd-shim-runsc-v1..."
+	@wget -q "https://storage.googleapis.com/gvisor/releases/release/$(GVISOR_VERSION)/$$(uname -m)/containerd-shim-runsc-v1" -O $(GVISOR_SHIM_BIN)
+	@chmod +x $(GVISOR_SHIM_BIN)
+	@echo "gVisor binaries downloaded successfully."
+
 .PHONY: setup-gvisor
-setup-gvisor: ## Set up Kind cluster with gVisor (runsc) for e2e tests
+setup-gvisor: download-gvisor ## Set up Kind cluster with gVisor (runsc) for e2e tests
 	@echo "Creating gVisor Kind cluster with runsc binaries from kubernetes/test/kind/gvisor/..."
 	@export GVISOR_KIND_CLUSTER=$(GVISOR_KIND_CLUSTER) && \
 		export GVISOR_KIND_IMAGE=$(GVISOR_KIND_IMAGE) && \
 		export PWD=$$(pwd) && \
-		envsubst < test/kind/runtimeclass/gvisor.yaml.tmpl | \
+		envsubst < test/e2e_runtime/gvisor/testdata/gvisor.yaml.tmpl | \
 		$(KIND) create cluster --config -
 	@echo "Creating runsc.toml on Kind nodes..."
 	@for node in $$(docker ps --filter "name=$(GVISOR_KIND_CLUSTER)-" --format "{{.Names}}"); do \

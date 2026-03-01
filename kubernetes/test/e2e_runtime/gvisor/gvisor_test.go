@@ -31,7 +31,7 @@ import (
 // runKubectl executes a kubectl command from the project root directory
 func runKubectl(args ...string) (string, error) {
 	cmd := exec.Command("kubectl", args...)
-	cmd.Dir = "../../.." // 从 test/e2e_runtime/gvisor 回到项目根目录
+	cmd.Dir = "../../.." // Navigate from test/e2e_runtime/gvisor to project root
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(output), fmt.Errorf("kubectl %v failed: %w", args, err)

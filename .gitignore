@@ -266,3 +266,7 @@ nbdist/
 # Generated files
 generated/
 **/generated/**
+
+# gVisor runtime binaries (downloaded dynamically)
+kubernetes/test/kind/gvisor/runsc
+kubernetes/test/kind/gvisor/containerd-shim-runsc-v1

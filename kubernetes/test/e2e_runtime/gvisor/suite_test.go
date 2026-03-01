@@ -27,12 +27,20 @@ import (
 )
 
 const (
-	// KindCluster is the name of the Kind cluster for gVisor tests
-	KindCluster = "gvisor-test"
-
 	// RuntimeClassName is the name of the RuntimeClass for gVisor
 	RuntimeClassName = "gvisor"
 )
+
+// KindCluster is the name of the Kind cluster for gVisor tests.
+// It reads from KIND_CLUSTER environment variable, defaulting to "gvisor-test".
+var KindCluster = getKindCluster()
+
+func getKindCluster() string {
+	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
+		return v
+	}
+	return "gvisor-test"
+}
 
 // TestGVisorRuntimeClass runs the gVisor RuntimeClass end-to-end tests.
 // These tests validate gVisor functionality with the Kind cluster
@@ -52,14 +60,14 @@ var _ = BeforeSuite(func() {
 		makeArgs = append(makeArgs, fmt.Sprintf("DOCKER_BUILD_ARGS=%s", dockerBuildArgs))
 	}
 	cmd := exec.Command("make", makeArgs...)
-	cmd.Dir = "../../.." // 从 test/e2e_runtime/gvisor 回到项目根目录
+	cmd.Dir = "../../.." // Navigate from test/e2e_runtime/gvisor to project root
 	output, err := cmd.CombinedOutput()
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build task-executor image: %s", string(output))
 
 	By("loading task-executor image on Kind")
-	// 直接使用 kind 命令加载镜像，避免 utils.GetProjectDir() 路径问题
+	// Use kind command directly to load image, avoiding utils.GetProjectDir() path issues
 	cmd = exec.Command("kind", "load", "docker-image", "--name", KindCluster, e2e_runtime.TaskExecutorImage)
-	cmd.Dir = "../../.." // 从 test/e2e_runtime/gvisor 回到项目根目录
+	cmd.Dir = "../../.." // Navigate from test/e2e_runtime/gvisor to project root
 	output, err = cmd.CombinedOutput()
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load task-executor image into Kind: %s", string(output))
 })
