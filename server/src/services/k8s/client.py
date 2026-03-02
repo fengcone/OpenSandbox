@@ -18,7 +18,7 @@ Kubernetes client wrapper for managing cluster connections and API access.
 
 from typing import Optional
 from kubernetes import client, config
-from kubernetes.client import CoreV1Api, CustomObjectsApi
+from kubernetes.client import CoreV1Api, CustomObjectsApi, NodeV1Api
 
 from src.config import KubernetesRuntimeConfig
 
@@ -76,10 +76,43 @@ class K8sClient:
     def get_custom_objects_api(self) -> CustomObjectsApi:
         """
         Get CustomObjectsApi client instance for CRD operations.
-        
+
         Returns:
             CustomObjectsApi: Kubernetes Custom Objects API client
         """
         if self._custom_objects_api is None:
             self._custom_objects_api = client.CustomObjectsApi()
         return self._custom_objects_api
+
+    def get_node_v1_api(self) -> NodeV1Api:
+        """
+        Get NodeV1Api client instance for RuntimeClass operations.
+
+        Returns:
+            NodeV1Api: Kubernetes Node V1 API client
+        """
+        if not hasattr(self, '_node_v1_api') or self._node_v1_api is None:
+            self._node_v1_api = client.NodeV1Api()
+        return self._node_v1_api
+
+    @property
+    def api(self) -> "K8sClient":
+        """Alias for direct API access (for compatibility with runtime_resolver)."""
+        return self
+
+    async def read_runtime_class(self, name: str):
+        """
+        Read a RuntimeClass from the cluster.
+
+        Args:
+            name: RuntimeClass name
+
+        Returns:
+            The RuntimeClass object
+
+        Raises:
+            ApiException: If the RuntimeClass does not exist
+        """
+        # Note: Kubernetes client is synchronous, but we wrap it in an async method
+        # for compatibility with async contexts
+        return self.get_node_v1_api().read_runtime_class(name)

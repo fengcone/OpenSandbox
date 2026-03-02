@@ -19,7 +19,7 @@ Factory for creating WorkloadProvider instances.
 import logging
 from typing import Dict, Type, Optional
 
-from src.config import KubernetesRuntimeConfig, AgentSandboxRuntimeConfig, IngressConfig
+from src.config import AppConfig, KubernetesRuntimeConfig, AgentSandboxRuntimeConfig, IngressConfig
 from src.services.k8s.workload_provider import WorkloadProvider
 from src.services.k8s.batchsandbox_provider import BatchSandboxProvider
 from src.services.k8s.agent_sandbox_provider import AgentSandboxProvider
@@ -46,20 +46,22 @@ def create_workload_provider(
     k8s_config: Optional[KubernetesRuntimeConfig] = None,
     agent_sandbox_config: Optional[AgentSandboxRuntimeConfig] = None,
     ingress_config: Optional[IngressConfig] = None,
+    app_config: Optional[AppConfig] = None,
 ) -> WorkloadProvider:
     """
     Create a WorkloadProvider instance based on the provider type.
-    
+
     Args:
         provider_type: Type of provider (e.g., 'batchsandbox', 'pod', 'job').
                       If None, uses the first registered provider.
         k8s_client: Kubernetes client instance
         k8s_config: Optional Kubernetes runtime configuration (for template file paths, etc.)
         agent_sandbox_config: Optional agent-sandbox configuration (for template/shutdown policy)
-        
+        app_config: Optional application config for secure runtime
+
     Returns:
         WorkloadProvider instance
-        
+
     Raises:
         ValueError: If provider_type is not supported or no providers are registered
     """
@@ -72,19 +74,19 @@ def create_workload_provider(
             )
         provider_type = next(iter(_PROVIDER_REGISTRY.keys()))
         logger.info(f"No provider specified, using default: {provider_type}")
-    
+
     provider_type_lower = provider_type.lower()
-    
+
     if provider_type_lower not in _PROVIDER_REGISTRY:
         available = ", ".join(_PROVIDER_REGISTRY.keys())
         raise ValueError(
             f"Unsupported workload provider type '{provider_type}'. "
             f"Available providers: {available}"
         )
-    
+
     provider_class = _PROVIDER_REGISTRY[provider_type_lower]
     logger.info(f"Creating workload provider: {provider_class.__name__}")
-    
+
     # Special handling for BatchSandboxProvider - pass template file path
     if provider_type_lower == PROVIDER_TYPE_BATCHSANDBOX:
         template_file = k8s_config.batchsandbox_template_file if k8s_config else None
@@ -97,6 +99,7 @@ def create_workload_provider(
             enable_informer=k8s_config.informer_enabled,
             informer_resync_seconds=k8s_config.informer_resync_seconds,
             informer_watch_timeout_seconds=k8s_config.informer_watch_timeout_seconds,
+            app_config=app_config,
         )
 
     # Special handling for AgentSandboxProvider - pass agent-specific settings
@@ -115,8 +118,9 @@ def create_workload_provider(
             informer_watch_timeout_seconds=(
                 k8s_config.informer_watch_timeout_seconds if k8s_config else 60
             ),
+            app_config=app_config,
         )
-    
+
     # Providers without ingress-specific needs
     return provider_class(k8s_client)
 

@@ -284,6 +284,63 @@ class RuntimeConfig(BaseModel):
     )
 
 
+class SecureRuntimeConfig(BaseModel):
+    """Secure container runtime configuration (gVisor, Kata, Firecracker)."""
+
+    type: Literal["", "gvisor", "kata", "firecracker"] = Field(
+        default="",
+        description=(
+            "Secure runtime type. Empty means no secure runtime. "
+            "gVisor uses runsc OCI runtime. "
+            "Kata uses kata-runtime (OCI) or kata-qemu (RuntimeClass). "
+            "Firecracker uses kata-fc (RuntimeClass, Kubernetes only)."
+        ),
+    )
+    docker_runtime: Optional[str] = Field(
+        default=None,
+        description=(
+            "OCI runtime name for Docker (e.g., 'runsc' for gVisor, 'kata-runtime' for Kata). "
+            "When specified, the Docker daemon will use this runtime instead of runc."
+        ),
+    )
+    k8s_runtime_class: Optional[str] = Field(
+        default=None,
+        description=(
+            "Kubernetes RuntimeClass name for secure containers. "
+            "Common values: 'gvisor', 'kata-qemu', 'kata-fc'. "
+            "When specified, pods will have runtimeClassName set to this value."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_secure_runtime(self) -> "SecureRuntimeConfig":
+        if self.type == "":
+            # No secure runtime configured
+            if self.docker_runtime is not None or self.k8s_runtime_class is not None:
+                raise ValueError(
+                    "docker_runtime and k8s_runtime_class must be omitted when secure_runtime.type is empty."
+                )
+            return self
+
+        if self.type == "firecracker":
+            # Firecracker is Kubernetes-only
+            if self.k8s_runtime_class is None:
+                raise ValueError(
+                    "secure_runtime.k8s_runtime_class is required when secure_runtime.type is 'firecracker'."
+                )
+            # Optional: also allow docker_runtime for consistency, but Firecracker won't use it
+
+        # For gVisor and Kata, at least one runtime must be specified
+        if self.type in ("gvisor", "kata"):
+            if self.docker_runtime is None and self.k8s_runtime_class is None:
+                raise ValueError(
+                    f"At least one of secure_runtime.docker_runtime or secure_runtime.k8s_runtime_class "
+                    f"must be specified when secure_runtime.type is '{self.type}'."
+                )
+
+        return self
+
+
 class DockerConfig(BaseModel):
     """Docker runtime specific settings."""
 
@@ -352,6 +409,10 @@ class AppConfig(BaseModel):
     docker: DockerConfig = Field(default_factory=DockerConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     egress: Optional[EgressConfig] = None
+    secure_runtime: Optional[SecureRuntimeConfig] = Field(
+        default=None,
+        description="Secure container runtime configuration (gVisor, Kata, Firecracker).",
+    )
 
     @model_validator(mode="after")
     def validate_runtime_blocks(self) -> "AppConfig":
@@ -472,6 +533,7 @@ __all__ = [
     "StorageConfig",
     "KubernetesRuntimeConfig",
     "EgressConfig",
+    "SecureRuntimeConfig",
     "DEFAULT_CONFIG_PATH",
     "CONFIG_ENV_VAR",
     "get_config",

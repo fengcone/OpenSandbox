@@ -64,11 +64,43 @@ logging.getLogger().setLevel(
 
 from src.api.lifecycle import router  # noqa: E402
 from src.middleware.auth import AuthMiddleware  # noqa: E402
+from src.services.runtime_resolver import (  # noqa: E402
+    validate_secure_runtime_on_startup,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.http_client = httpx.AsyncClient(timeout=180.0)
+
+    # Validate secure runtime configuration at startup
+    try:
+        # Get sandbox service to access clients for validation
+        from src.services.factory import create_sandbox_service
+
+        sandbox_service = create_sandbox_service()
+        app.state.sandbox_service = sandbox_service
+
+        # Extract clients for validation
+        docker_client = None
+        k8s_client = None
+
+        if hasattr(sandbox_service, 'docker_client'):
+            docker_client = sandbox_service.docker_client
+        elif hasattr(sandbox_service, 'k8s_client'):
+            k8s_client = sandbox_service.k8s_client
+
+        await validate_secure_runtime_on_startup(
+            app_config,
+            docker_client=docker_client,
+            k8s_client=k8s_client,
+        )
+    except Exception as exc:
+        logging.getLogger("src.main").error(
+            "Secure runtime validation failed: %s", exc
+        )
+        raise
+
     yield
     await app.state.http_client.aclose()
 

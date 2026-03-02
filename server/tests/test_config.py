@@ -407,3 +407,155 @@ def test_load_config_without_storage_block_uses_defaults(tmp_path, monkeypatch):
     loaded = config_module.load_config(config_path)
     assert loaded.storage is not None
     assert loaded.storage.allowed_host_paths == []
+
+
+# ============================================================================
+# SecureRuntimeConfig Tests
+# ============================================================================
+
+
+def test_secure_runtime_empty_type_is_valid():
+    """Empty type (default runc) should be valid."""
+    cfg = config_module.SecureRuntimeConfig(type="")
+    assert cfg.type == ""
+    assert cfg.docker_runtime is None
+    assert cfg.k8s_runtime_class is None
+
+
+def test_secure_runtime_gvisor_with_docker_runtime_is_valid():
+    """gVisor with docker_runtime should be valid."""
+    cfg = config_module.SecureRuntimeConfig(
+        type="gvisor",
+        docker_runtime="runsc",
+        k8s_runtime_class="gvisor",
+    )
+    assert cfg.type == "gvisor"
+    assert cfg.docker_runtime == "runsc"
+    assert cfg.k8s_runtime_class == "gvisor"
+
+
+def test_secure_runtime_gvisor_with_k8s_runtime_class_is_valid():
+    """gVisor with only k8s_runtime_class should be valid."""
+    cfg = config_module.SecureRuntimeConfig(
+        type="gvisor",
+        docker_runtime=None,
+        k8s_runtime_class="gvisor",
+    )
+    assert cfg.type == "gvisor"
+    assert cfg.docker_runtime is None
+    assert cfg.k8s_runtime_class == "gvisor"
+
+
+def test_secure_runtime_kata_with_runtimes_is_valid():
+    """Kata with both runtimes should be valid."""
+    cfg = config_module.SecureRuntimeConfig(
+        type="kata",
+        docker_runtime="kata-runtime",
+        k8s_runtime_class="kata-qemu",
+    )
+    assert cfg.type == "kata"
+    assert cfg.docker_runtime == "kata-runtime"
+    assert cfg.k8s_runtime_class == "kata-qemu"
+
+
+def test_secure_runtime_firecracker_with_k8s_runtime_is_valid():
+    """Firecracker with k8s_runtime_class should be valid."""
+    cfg = config_module.SecureRuntimeConfig(
+        type="firecracker",
+        docker_runtime="",
+        k8s_runtime_class="kata-fc",
+    )
+    assert cfg.type == "firecracker"
+    assert cfg.docker_runtime == ""
+    assert cfg.k8s_runtime_class == "kata-fc"
+
+
+def test_secure_runtime_firecracker_without_k8s_runtime_raises_error():
+    """Firecracker without k8s_runtime_class should raise error."""
+    with pytest.raises(ValueError) as exc:
+        config_module.SecureRuntimeConfig(
+            type="firecracker",
+            docker_runtime="",
+            k8s_runtime_class=None,
+        )
+    assert "k8s_runtime_class" in str(exc.value).lower()
+
+
+def test_secure_runtime_gvisor_without_any_runtime_raises_error():
+    """gVisor without any runtime configured should raise error."""
+    with pytest.raises(ValueError) as exc:
+        config_module.SecureRuntimeConfig(
+            type="gvisor",
+            docker_runtime=None,
+            k8s_runtime_class=None,
+        )
+    assert "docker_runtime" in str(exc.value).lower() or "k8s_runtime_class" in str(exc.value).lower()
+
+
+def test_secure_runtime_kata_without_any_runtime_raises_error():
+    """Kata without any runtime configured should raise error."""
+    with pytest.raises(ValueError) as exc:
+        config_module.SecureRuntimeConfig(
+            type="kata",
+            docker_runtime=None,
+            k8s_runtime_class=None,
+        )
+    assert "docker_runtime" in str(exc.value).lower() or "k8s_runtime_class" in str(exc.value).lower()
+
+
+def test_secure_runtime_invalid_type_raises_error():
+    """Invalid type should raise ValidationError."""
+    with pytest.raises(Exception):
+        config_module.SecureRuntimeConfig(type="invalid_runtime")
+
+
+def test_app_config_with_secure_runtime():
+    """AppConfig should parse secure_runtime section."""
+    cfg = AppConfig(
+        runtime={"type": "docker", "execd_image": "execd:v1"},
+        secure_runtime={
+            "type": "gvisor",
+            "docker_runtime": "runsc",
+            "k8s_runtime_class": "gvisor",
+        },
+    )
+    assert cfg.secure_runtime is not None
+    assert cfg.secure_runtime.type == "gvisor"
+    assert cfg.secure_runtime.docker_runtime == "runsc"
+
+
+def test_app_config_without_secure_runtime():
+    """AppConfig without secure_runtime should have None."""
+    cfg = AppConfig(
+        runtime={"type": "docker", "execd_image": "execd:v1"},
+    )
+    assert cfg.secure_runtime is None
+
+
+def test_load_config_with_secure_runtime(tmp_path, monkeypatch):
+    """SecureRuntimeConfig should be loaded from [secure_runtime] TOML block."""
+    _reset_config(monkeypatch)
+    toml = textwrap.dedent(
+        """
+        [server]
+        host = "127.0.0.1"
+        port = 9000
+
+        [runtime]
+        type = "docker"
+        execd_image = "ghcr.io/opensandbox/platform:test"
+
+        [secure_runtime]
+        type = "gvisor"
+        docker_runtime = "runsc"
+        k8s_runtime_class = "gvisor"
+        """
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(toml)
+
+    loaded = config_module.load_config(config_path)
+    assert loaded.secure_runtime is not None
+    assert loaded.secure_runtime.type == "gvisor"
+    assert loaded.secure_runtime.docker_runtime == "runsc"
+    assert loaded.secure_runtime.k8s_runtime_class == "gvisor"
