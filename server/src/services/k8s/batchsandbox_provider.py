@@ -30,7 +30,7 @@ from kubernetes.client import (
     ApiException,
 )
 
-from src.config import IngressConfig, INGRESS_MODE_GATEWAY
+from src.config import AppConfig, IngressConfig, INGRESS_MODE_GATEWAY
 from src.services.helpers import format_ingress_endpoint
 from src.api.schema import Endpoint, ImageSpec, NetworkPolicy
 from src.services.k8s.batchsandbox_template import BatchSandboxTemplateManager
@@ -43,6 +43,7 @@ from src.services.k8s.egress_helper import (
 )
 from src.services.k8s.informer import WorkloadInformer
 from src.services.k8s.workload_provider import WorkloadProvider
+from src.services.runtime_resolver import SecureRuntimeResolver
 
 logger = logging.getLogger(__name__)
 
@@ -64,17 +65,25 @@ class BatchSandboxProvider(WorkloadProvider):
         informer_factory: Optional[Callable[[str], WorkloadInformer]] = None,
         informer_resync_seconds: int = 300,
         informer_watch_timeout_seconds: int = 60,
+        app_config: Optional[AppConfig] = None,
     ):
         """
         Initialize BatchSandbox provider.
-        
+
         Args:
             k8s_client: Kubernetes client wrapper
             template_file_path: Optional path to BatchSandbox CR YAML template file
+            app_config: Optional application config for secure runtime
         """
         self.k8s_client = k8s_client
         self.custom_api = k8s_client.get_custom_objects_api()
         self.ingress_config = ingress_config
+
+        # Initialize secure runtime resolver
+        self.resolver = SecureRuntimeResolver(app_config) if app_config else None
+        self.runtime_class = (
+            self.resolver.get_k8s_runtime_class() if self.resolver else None
+        )
         
         # CRD constants
         self.group = "sandbox.opensandbox.io"
@@ -140,7 +149,15 @@ class BatchSandboxProvider(WorkloadProvider):
             Dict with 'name' and 'uid' of created BatchSandbox
         """
         extensions = extensions or {}
-        
+
+        # Log runtime class usage for debugging
+        if self.runtime_class:
+            logger.info(
+                "Using Kubernetes RuntimeClass '%s' for sandbox %s",
+                self.runtime_class,
+                sandbox_id,
+            )
+
         # If poolRef is provided and not empty, create workload from pool
         if extensions.get("poolRef"):
             # When using pool, only entrypoint and env can be customized
@@ -183,6 +200,10 @@ class BatchSandboxProvider(WorkloadProvider):
                 }
             ],
         }
+
+        # Inject runtimeClassName if secure runtime is configured
+        if self.runtime_class:
+            pod_spec["runtimeClassName"] = self.runtime_class
         
         # Add egress sidecar if network policy is provided
         apply_egress_to_spec(

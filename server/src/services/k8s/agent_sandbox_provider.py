@@ -29,7 +29,7 @@ from kubernetes.client import (
     ApiException,
 )
 
-from src.config import IngressConfig
+from src.config import AppConfig, IngressConfig
 from src.services.helpers import format_ingress_endpoint
 from src.api.schema import Endpoint, ImageSpec, NetworkPolicy
 from src.services.k8s.agent_sandbox_template import AgentSandboxTemplateManager
@@ -42,6 +42,7 @@ from src.services.k8s.egress_helper import (
 )
 from src.services.k8s.informer import WorkloadInformer
 from src.services.k8s.workload_provider import WorkloadProvider
+from src.services.runtime_resolver import SecureRuntimeResolver
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class AgentSandboxProvider(WorkloadProvider):
         informer_factory: Optional[Callable[[str], WorkloadInformer]] = None,
         informer_resync_seconds: int = 300,
         informer_watch_timeout_seconds: int = 60,
+        app_config: Optional[AppConfig] = None,
     ):
         self.k8s_client = k8s_client
         self.custom_api = k8s_client.get_custom_objects_api()
@@ -90,6 +92,12 @@ class AgentSandboxProvider(WorkloadProvider):
         self._informers: Dict[str, WorkloadInformer] = {}
         self._informers_lock = Lock()
 
+        # Initialize secure runtime resolver
+        self.resolver = SecureRuntimeResolver(app_config) if app_config else None
+        self.runtime_class = (
+            self.resolver.get_k8s_runtime_class() if self.resolver else None
+        )
+
     def create_workload(
         self,
         sandbox_id: str,
@@ -105,6 +113,13 @@ class AgentSandboxProvider(WorkloadProvider):
         network_policy: Optional[NetworkPolicy] = None,
         egress_image: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if self.runtime_class:
+            logger.info(
+                "Using Kubernetes RuntimeClass '%s' for sandbox %s",
+                self.runtime_class,
+                sandbox_id,
+            )
+
         pod_spec = self._build_pod_spec(
             image_spec=image_spec,
             entrypoint=entrypoint,
@@ -194,6 +209,10 @@ class AgentSandboxProvider(WorkloadProvider):
                 }
             ],
         }
+
+        # Inject runtimeClassName if secure runtime is configured
+        if self.runtime_class:
+            pod_spec["runtimeClassName"] = self.runtime_class
         
         # Add egress sidecar if network policy is provided
         apply_egress_to_spec(

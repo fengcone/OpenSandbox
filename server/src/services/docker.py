@@ -72,6 +72,7 @@ from src.services.helpers import (
     parse_timestamp,
 )
 from src.services.sandbox_service import SandboxService
+from src.services.runtime_resolver import SecureRuntimeResolver
 from src.services.validators import (
     ensure_egress_configured,
     ensure_entrypoint,
@@ -187,6 +188,10 @@ class DockerSandboxService(SandboxService):
         self._pending_lock = Lock()
         self._pending_cleanup_timers: Dict[str, Timer] = {}
         self._restore_existing_sandboxes()
+
+        # Initialize secure runtime resolver
+        self.resolver = SecureRuntimeResolver(self.app_config)
+        self.docker_runtime = self.resolver.get_docker_runtime()
 
     def _resolve_api_timeout(self) -> int:
         """Docker API timeout in seconds: [docker].api_timeout if set, else default 180."""
@@ -1783,16 +1788,27 @@ class DockerSandboxService(SandboxService):
         container_id: Optional[str] = None
         try:
             with self._docker_operation("create sandbox container", sandbox_id):
-                response = self.docker_client.api.create_container(
-                    image=image_uri,
-                    entrypoint=[BOOTSTRAP_PATH],
-                    command=bootstrap_command,
-                    ports=exposed_ports,
-                    name=f"sandbox-{sandbox_id}",
-                    environment=environment,
-                    labels=labels,
-                    host_config=host_config,
-                )
+                container_kwargs = {
+                    "image": image_uri,
+                    "entrypoint": [BOOTSTRAP_PATH],
+                    "command": bootstrap_command,
+                    "ports": exposed_ports,
+                    "name": f"sandbox-{sandbox_id}",
+                    "environment": environment,
+                    "labels": labels,
+                    "host_config": host_config,
+                }
+
+                # Inject secure runtime if configured
+                if self.docker_runtime:
+                    logger.info(
+                        "Injecting secure Docker runtime '%s' for sandbox %s",
+                        self.docker_runtime,
+                        sandbox_id,
+                    )
+                    container_kwargs["runtime"] = self.docker_runtime
+
+                response = self.docker_client.api.create_container(**container_kwargs)
             container_id = response.get("Id")
             if not container_id:
                 raise HTTPException(
