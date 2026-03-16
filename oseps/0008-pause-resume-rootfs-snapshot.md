@@ -102,13 +102,16 @@ This OSEP deliberately chooses a simple architecture:
 - Public `sandboxId` must remain unchanged after pause and resume.
 - A sandbox has at most one retained snapshot in v1.
 - Pause must work from the currently running sandbox Pod and record the concrete
-  `podName` and `nodeName` that are being snapshotted.
+  `podName`, `containerName`, and `nodeName` that are being snapshotted.
 - The commit Job must run on the same node as the source Pod.
 - Pause must complete `commit -> push` before the original `BatchSandbox` is
   deleted.
+- At most one pause operation may be in progress for a given `sandboxId`.
 - Resume must work when the original `BatchSandbox` no longer exists.
 - `GET /sandboxes/{sandboxId}` must still return `200` and state `Paused` while
   the sandbox is represented only by a `SandboxSnapshot`.
+- `DELETE /sandboxes/{sandboxId}` must delete both the live workload and any
+  retained `SandboxSnapshot` for that sandbox.
 - Registry credentials must be referenced via Kubernetes Secret, not inline API
   credentials.
 - `SandboxSnapshot` must carry enough policy and workload reconstruction data to
@@ -153,6 +156,7 @@ SandboxSnapshot (new, one per sandboxId)
   |- spec.policy.type              # Rootfs today, reserved for VMSnapshot later
   |- spec.sourceBatchSandboxName
   |- spec.sourcePodName
+  |- spec.sourceContainerName
   |- spec.sourceNodeName
   |- spec.imageUri
   |- spec.snapshotPushSecretName
@@ -182,7 +186,7 @@ sequenceDiagram
 
     Client->>Server: POST /sandboxes/{id}/pause
     Server->>Batch: Read live BatchSandbox and Pod info
-    Server->>Snapshot: Create/Update SandboxSnapshot\n(sandboxId, podName, nodeName, imageUri, pushSecretRef, resumePullSecretRef)
+    Server->>Snapshot: Create/Update SandboxSnapshot\n(sandboxId, podName, containerName, nodeName, imageUri, pushSecretRef, resumePullSecretRef)
     Server-->>Client: 202 Accepted
     Ctrl->>Job: Create same-node commit Job Pod
     Job->>Registry: Push snapshot image
@@ -225,7 +229,9 @@ sequenceDiagram
 - `SandboxSnapshot.spec.policy.type` is reserved for future snapshot backends.
   This revision only supports `Rootfs`.
 - Snapshot image URI should be stable for the single retained snapshot, for
-  example `<snapshotRegistry>/<sandboxId>:snapshot`.
+  example `<snapshotRegistry>/<sandboxId>:snapshot`. This v1 design therefore
+  assumes a registry/tag policy that allows replacing the retained snapshot
+  image for a sandbox.
 - Snapshot push authentication and resume-time image pull authentication are
   modeled separately. They may reference the same Kubernetes Secret in some
   deployments, but the design must not assume they are identical.
@@ -244,7 +250,7 @@ sequenceDiagram
 | Pause succeeds in commit but old workload is deleted too early | Delete the original `BatchSandbox` only after `SandboxSnapshot.status.phase == Ready`. |
 | Commit job lands on the wrong node | Store `sourceNodeName` in `SandboxSnapshot.spec` and pin the commit Job Pod to that node. |
 | Server cannot represent a paused sandbox once `BatchSandbox` is gone | Use `SandboxSnapshot` as the source of truth for paused state in `GET /sandboxes/{sandboxId}`. |
-| Repeated pause requests cause inconsistent state | Use deterministic `SandboxSnapshot.metadata.name = sandboxId` and treat pause as replace/update of the single snapshot. |
+| Repeated pause requests cause inconsistent state | Allow only one in-flight pause per `sandboxId`; return `409` if snapshot phase is already `Pending`, `Committing`, or `Pushing`. |
 | Snapshot image is unavailable on resume | Require `status.phase == Ready` before resume and surface image-pull failures through normal sandbox startup state. |
 | Single-snapshot design loses rollback ability | Accept as an intentional simplification for v1; multi-snapshot support is a future extension. |
 
@@ -315,6 +321,7 @@ type SandboxSnapshotSpec struct {
     Policy                    SnapshotPolicy        `json:"policy"`
     SourceBatchSandboxName    string                `json:"sourceBatchSandboxName"`
     SourcePodName             string                `json:"sourcePodName"`
+    SourceContainerName       string                `json:"sourceContainerName"`
     SourceNodeName            string                `json:"sourceNodeName"`
     ImageURI                  string                `json:"imageUri"`
     SnapshotPushSecretName    string                `json:"snapshotPushSecretName,omitempty"`
@@ -341,8 +348,10 @@ Key rules:
 - one namespace contains at most one `SandboxSnapshot` for a given `sandboxId`
 - creating a new pause request overwrites the retained snapshot
 - `policy.type` must be set to `Rootfs` in this revision
-- `SourcePodName` and `SourceNodeName` are mandatory because the commit workflow
-  is bound to a concrete live Pod
+- `SourcePodName`, `SourceContainerName`, and `SourceNodeName` are mandatory
+  because the commit workflow is bound to a concrete live container
+- `SourceContainerName` identifies the main sandbox workload container whose
+  rootfs is being snapshotted; init containers and sidecars are not committed
 - `SnapshotPushSecretName` is used only for the in-container registry push
   performed by the commit Job
 - `ResumeImagePullSecretName` is used only when reconstructing the resumed
@@ -354,8 +363,11 @@ Key rules:
 
 State is derived from resource presence:
 
-- `BatchSandbox` exists and is ready -> `Running`
-- `BatchSandbox` exists and snapshot phase is `Pending|Committing|Pushing` -> `Pausing`
+- `BatchSandbox` exists and is ready, and no matching pause cleanup is pending
+  -> `Running`
+- `BatchSandbox` exists and snapshot phase is
+  `Pending|Committing|Pushing|Ready`, and the live workload still matches
+  `snapshot.spec.sourceBatchSandboxName` -> `Pausing`
 - `BatchSandbox` is absent and snapshot phase is `Ready` -> `Paused`
 - `BatchSandbox` exists and was created from snapshot but is not ready yet ->
   `Resuming`
@@ -376,10 +388,13 @@ The pause flow is:
            - workload exists
            - replicas == 1 for this server path
            - pausePolicy is configured
+           - no existing snapshot for sandboxId is already in phase
+             Pending|Committing|Pushing
 4. Server  Create or replace SandboxSnapshot(name=sandboxId) with:
            - policy.type = Rootfs
            - sourceBatchSandboxName
            - sourcePodName
+           - sourceContainerName
            - sourceNodeName
            - target imageUri
            - snapshotPushSecretName
@@ -402,6 +417,8 @@ Failure behavior:
 - The sandbox remains `Running` or transitions to `Failed` based on the final
   server policy; this OSEP recommends keeping the workload running and exposing
   the snapshot failure in the message
+- If another pause is already in progress for the same `sandboxId`, the server
+  returns `409 Conflict`
 
 ### 6. Commit Job Pod
 
@@ -445,7 +462,8 @@ spec:
             secretName: <snapshotPushSecretName>
 ```
 
-The controller resolves the source container ID from `SourcePodName`.
+The controller resolves the source container ID from `SourcePodName` and
+`SourceContainerName`.
 
 `snapshot-committer` in this example is a logical role, not a required product
 name. The implementation may be a small in-house binary, a thin wrapper around
@@ -523,7 +541,23 @@ not.
 This keeps paused sandboxes visible even though their workloads have been
 deleted.
 
-### 10. Configuration
+### 10. Delete semantics
+
+`DELETE /sandboxes/{sandboxId}` must remove all Kubernetes state associated with
+the public sandbox identity:
+
+- delete the live `BatchSandbox` if it exists
+- delete `SandboxSnapshot(name=sandboxId)` if it exists
+
+Registry cleanup is best-effort in this revision:
+
+- if the implementation can safely delete the retained snapshot image from the
+  registry, it may do so
+- registry image deletion failure must not block sandbox deletion success
+- operators may rely on registry retention or garbage collection if image
+  deletion is unavailable or undesirable
+
+### 11. Configuration
 
 Add a new server config section:
 
@@ -539,18 +573,38 @@ Semantics:
   explicitly set.
 - `committer_image` is the image used by the commit Job Pod.
 
+### 12. Security considerations
+
+The commit Job mounts the node's container runtime socket to resolve the source
+container and commit its root filesystem. This is a privileged operation with
+node-level runtime access.
+
+Operational constraints for this design:
+
+- `committer_image` is selected by server or operator configuration, not by the
+  public sandbox API
+- the commit Job spec is not user-extensible in this revision
+- operators should treat the snapshot controller and committer image as trusted
+  infrastructure components, with tighter RBAC and supply-chain controls than
+  ordinary sandbox workloads
+
 ## Test Plan
 
 ### Unit tests
 
 - Pause request creates or replaces `SandboxSnapshot(name=sandboxId)`.
-- `SandboxSnapshot` contains `sourcePodName` and `sourceNodeName` from the live
-  Pod.
+- `SandboxSnapshot` contains `sourcePodName`, `sourceContainerName`, and
+  `sourceNodeName` from the live workload.
 - Snapshot controller creates a Job pinned to the correct node.
 - Server returns `Paused` when `BatchSandbox` is absent and snapshot is `Ready`.
+- Server returns `Pausing` when snapshot is `Ready` but the source
+  `BatchSandbox` still exists.
 - Server returns `Resuming` after new `BatchSandbox` is created from snapshot but
   before readiness.
+- Pause returns `409` when another pause is already in progress for the same
+  `sandboxId`.
 - Resume fails with `409` when snapshot is absent or not `Ready`.
+- Delete removes `SandboxSnapshot` for paused sandboxes.
 
 ### Integration tests
 
@@ -567,6 +621,9 @@ Semantics:
 - Repeat pause after resume:
   - the same `SandboxSnapshot` resource is reused or replaced
   - only one snapshot remains
+- Delete after pause:
+  - paused sandbox is removed even when no live `BatchSandbox` exists
+  - retained `SandboxSnapshot` is removed
 
 ### Manual and operator validation
 
@@ -574,6 +631,8 @@ Semantics:
 - Confirm working directory contents survive pause and resume.
 - Confirm CPU and memory are released after the old `BatchSandbox` is deleted.
 - Confirm the commit Job Pod actually runs on the source node.
+- Confirm the committed rootfs comes from the intended sandbox container rather
+  than a sidecar.
 
 ## Drawbacks
 
