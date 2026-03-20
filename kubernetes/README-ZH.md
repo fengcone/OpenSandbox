@@ -138,7 +138,7 @@ kind load docker-image <controller-image-name>:<tag>
 kind load docker-image <task-executor-image-name>:<tag>
 ```
 
-例如，如果您使用 `make docker-build IMG=my-controller:latest` 构建镜像，则使用以下命令加载：
+例如，如果您使用 `make docker-build CONTROLLER_IMG=my-controller:latest` 构建镜像，则使用以下命令加载：
 ```sh
 kind load docker-image my-controller:latest
 ```
@@ -241,7 +241,7 @@ helm install opensandbox-controller \
 1. **构建和推送您的镜像：**
    ```sh
    # 构建和推送控制器镜像
-   make docker-build docker-push IMG=<some-registry>/opensandbox-controller:tag
+   make docker-build docker-push CONTROLLER_IMG=<some-registry>/opensandbox-controller:tag
    
    # 构建和推送任务执行器镜像
    make docker-build-task-executor docker-push-task-executor TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
@@ -289,7 +289,7 @@ helm uninstall opensandbox-controller -n opensandbox-system
 1. **构建和推送您的镜像：**
    ```sh
    # 构建和推送控制器镜像
-   make docker-build docker-push IMG=<some-registry>/opensandbox-controller:tag
+   make docker-build docker-push CONTROLLER_IMG=<some-registry>/opensandbox-controller:tag
    
    # 构建和推送任务执行器镜像
    make docker-build-task-executor docker-push-task-executor TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
@@ -304,7 +304,7 @@ helm uninstall opensandbox-controller -n opensandbox-system
 
 3. **将管理器部署到集群：**
    ```sh
-   make deploy IMG=<some-registry>/opensandbox-controller:tag TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
+   make deploy CONTROLLER_IMG=<some-registry>/opensandbox-controller:tag TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
    ```
 
    **注意**：您可能需要授予自己集群管理员权限或以管理员身份登录以确保您在运行命令之前具有集群管理员权限。

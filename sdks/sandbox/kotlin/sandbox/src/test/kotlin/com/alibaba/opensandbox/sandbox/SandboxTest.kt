@@ -18,11 +18,14 @@ package com.alibaba.opensandbox.sandbox
 
 import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxReadyTimeoutException
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkRule
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxMetrics
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxRenewResponse
 import com.alibaba.opensandbox.sandbox.domain.services.Commands
+import com.alibaba.opensandbox.sandbox.domain.services.Egress
 import com.alibaba.opensandbox.sandbox.domain.services.Filesystem
 import com.alibaba.opensandbox.sandbox.domain.services.Health
 import com.alibaba.opensandbox.sandbox.domain.services.Metrics
@@ -35,6 +38,7 @@ import io.mockk.just
 import io.mockk.mockk
 import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -61,6 +65,9 @@ class SandboxTest {
     lateinit var metricsService: Metrics
 
     @MockK
+    lateinit var egressService: Egress
+
+    @MockK
     lateinit var httpClientProvider: HttpClientProvider
 
     private lateinit var sandbox: Sandbox
@@ -84,6 +91,7 @@ class SandboxTest {
                 commandService = commandService,
                 healthService = healthService,
                 metricsService = metricsService,
+                egressService = egressService,
                 customHealthCheck = null,
                 httpClientProvider = httpClientProvider,
             )
@@ -154,6 +162,41 @@ class SandboxTest {
         val actualRenew = sandbox.renew(timeout)
 
         assertSame(expectedRenew, actualRenew)
+    }
+
+    @Test
+    fun `getEgressPolicy should delegate to egressService`() {
+        val expectedPolicy = mockk<NetworkPolicy>()
+        every { egressService.getPolicy() } returns expectedPolicy
+
+        val result = sandbox.getEgressPolicy()
+
+        assertSame(expectedPolicy, result)
+        verify { egressService.getPolicy() }
+    }
+
+    @Test
+    fun `patchEgressRules should delegate to egressService`() {
+        val rules = listOf(mockk<NetworkRule>())
+        every { egressService.patchRules(rules) } just Runs
+
+        sandbox.patchEgressRules(rules)
+
+        verify { egressService.patchRules(rules) }
+    }
+
+    @Test
+    fun `builder manualCleanup should clear timeout`() {
+        val builder =
+            Sandbox.builder()
+                .image("python:3.12")
+                .timeout(Duration.ofMinutes(5))
+                .manualCleanup()
+
+        val timeoutField = builder.javaClass.getDeclaredField("timeout")
+        timeoutField.isAccessible = true
+
+        assertNull(timeoutField.get(builder))
     }
 
     @Test

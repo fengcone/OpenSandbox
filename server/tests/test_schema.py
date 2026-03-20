@@ -21,6 +21,7 @@ from src.api.schema import (
     CreateSandboxRequest,
     Host,
     ImageSpec,
+    OSSFS,
     PVC,
     ResourceLimits,
     Volume,
@@ -94,6 +95,44 @@ class TestPVC:
 
 
 # ============================================================================
+# OSSFS Tests
+# ============================================================================
+
+
+class TestOSSFS:
+    """Tests for OSSFS model."""
+
+    def test_valid_ossfs(self):
+        backend = OSSFS(
+            bucket="bucket-test-3",
+            endpoint="oss-cn-hangzhou.aliyuncs.com",
+            version="2.0",
+            options=["allow_other"],
+            access_key_id="AKIDEXAMPLE",
+            access_key_secret="SECRETEXAMPLE",
+        )
+        assert backend.bucket == "bucket-test-3"
+        assert backend.version == "2.0"
+        assert backend.access_key_id == "AKIDEXAMPLE"
+
+    def test_default_ossfs_version_is_2_0(self):
+        backend = OSSFS(
+            bucket="bucket-test-3",
+            endpoint="oss-cn-hangzhou.aliyuncs.com",
+            access_key_id="AKIDEXAMPLE",
+            access_key_secret="SECRETEXAMPLE",
+        )
+        assert backend.version == "2.0"
+
+    def test_inline_credentials_required(self):
+        with pytest.raises(ValidationError):
+            OSSFS(  # type: ignore
+                bucket="bucket-test-3",
+                endpoint="oss-cn-hangzhou.aliyuncs.com",
+            )
+
+
+# ============================================================================
 # Volume Tests
 # ============================================================================
 
@@ -141,6 +180,23 @@ class TestVolume:
             read_only=False,
             sub_path="task-001",
         )
+        assert volume.sub_path == "task-001"
+
+    def test_valid_ossfs_volume(self):
+        """Valid OSSFS volume should be accepted."""
+        volume = Volume(
+            name="data",
+            ossfs=OSSFS(
+                bucket="bucket-test-3",
+                endpoint="oss-cn-hangzhou.aliyuncs.com",
+                    access_key_id="AKIDEXAMPLE",
+                access_key_secret="SECRETEXAMPLE",
+            ),
+            mount_path="/mnt/data",
+            sub_path="task-001",
+        )
+        assert volume.ossfs is not None
+        assert volume.ossfs.access_key_id == "AKIDEXAMPLE"
         assert volume.sub_path == "task-001"
 
     def test_no_backend_raises(self):
@@ -235,6 +291,24 @@ class TestVolume:
         assert volume.mount_path == "/mnt/models"
         assert volume.read_only is True
 
+    def test_serialization_ossfs_volume(self):
+        volume = Volume(
+            name="data",
+            ossfs=OSSFS(
+                bucket="bucket-test-3",
+                endpoint="oss-cn-hangzhou.aliyuncs.com",
+                    access_key_id="AKIDEXAMPLE",
+                access_key_secret="SECRETEXAMPLE",
+            ),
+            mount_path="/mnt/data",
+            read_only=False,
+            sub_path="task-001",
+        )
+        data = volume.model_dump(by_alias=True, exclude_none=True)
+        assert data["ossfs"]["bucket"] == "bucket-test-3"
+        assert data["ossfs"]["accessKeyId"] == "AKIDEXAMPLE"
+        assert data["subPath"] == "task-001"
+
 
 # ============================================================================
 # CreateSandboxRequest with Volumes Tests
@@ -243,6 +317,15 @@ class TestVolume:
 
 class TestCreateSandboxRequestWithVolumes:
     """Tests for CreateSandboxRequest with volumes field."""
+
+    def test_request_without_timeout_uses_manual_cleanup(self):
+        """Request without timeout should be valid and represent manual cleanup mode."""
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            resource_limits=ResourceLimits({"cpu": "500m", "memory": "512Mi"}),
+            entrypoint=["python", "-c", "print('hello')"],
+        )
+        assert request.timeout is None
 
     def test_request_without_volumes(self):
         """Request without volumes should be valid."""
@@ -397,3 +480,24 @@ class TestCreateSandboxRequestWithVolumes:
         assert request.volumes[1].pvc.claim_name == "shared-models-pvc"
         assert request.volumes[1].mount_path == "/mnt/models"
         assert request.volumes[1].read_only is True
+
+    def test_request_rejects_zero_timeout(self):
+        """Zero timeout should still be rejected."""
+        with pytest.raises(ValidationError):
+            CreateSandboxRequest(
+                image=ImageSpec(uri="python:3.11"),
+                timeout=0,
+                resource_limits=ResourceLimits({"cpu": "500m"}),
+                entrypoint=["python", "-c", "print('hello')"],
+            )
+
+    def test_request_allows_timeout_above_previous_hardcoded_limit(self):
+        """Schema should not hardcode the server-side maximum timeout."""
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=172800,
+            resource_limits=ResourceLimits({"cpu": "500m", "memory": "512Mi"}),
+            entrypoint=["python", "-c", "print('hello')"],
+        )
+
+        assert request.timeout == 172800

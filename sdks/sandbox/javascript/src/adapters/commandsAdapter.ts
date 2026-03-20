@@ -33,6 +33,7 @@ function joinUrl(baseUrl: string, pathname: string): string {
   return `${base}${path}`;
 }
 
+/** Request body for POST /command (from generated spec; includes uid, gid, envs). */
 type ApiRunCommandRequest =
   ExecdPaths["/command"]["post"]["requestBody"]["content"]["application/json"];
 type ApiCommandStatusOk =
@@ -41,6 +42,10 @@ type ApiCommandLogsOk =
   ExecdPaths["/command/{id}/logs"]["get"]["responses"][200]["content"]["text/plain"];
 
 function toRunCommandRequest(command: string, opts?: RunCommandOpts): ApiRunCommandRequest {
+  if (opts?.gid != null && opts.uid == null) {
+    throw new Error("uid is required when gid is provided");
+  }
+
   const body: ApiRunCommandRequest = {
     command,
     cwd: opts?.workingDirectory,
@@ -48,6 +53,15 @@ function toRunCommandRequest(command: string, opts?: RunCommandOpts): ApiRunComm
   };
   if (opts?.timeoutSeconds != null) {
     body.timeout = Math.round(opts.timeoutSeconds * 1000);
+  }
+  if (opts?.uid != null) {
+    body.uid = opts.uid;
+  }
+  if (opts?.gid != null) {
+    body.gid = opts.gid;
+  }
+  if (opts?.envs != null) {
+    body.envs = opts.envs;
   }
   return body;
 }

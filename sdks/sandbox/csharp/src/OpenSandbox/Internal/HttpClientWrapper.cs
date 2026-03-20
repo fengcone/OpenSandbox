@@ -119,6 +119,46 @@ internal sealed class HttpClientWrapper
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<T> PatchAsync<T>(
+        string path,
+        object? body = null,
+        CancellationToken cancellationToken = default)
+    {
+        var url = BuildUrl(path);
+        _logger.LogDebug("HTTP PATCH {Url}", url);
+        using var request = new HttpRequestMessage(HttpMethod.Patch, url);
+        ApplyDefaultHeaders(request);
+
+        if (body != null)
+        {
+            var json = JsonSerializer.Serialize(body, JsonOptions);
+            request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        }
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        return await HandleResponseAsync<T>(response, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task PatchAsync(
+        string path,
+        object? body = null,
+        CancellationToken cancellationToken = default)
+    {
+        var url = BuildUrl(path);
+        _logger.LogDebug("HTTP PATCH {Url}", url);
+        using var request = new HttpRequestMessage(HttpMethod.Patch, url);
+        ApplyDefaultHeaders(request);
+
+        if (body != null)
+        {
+            var json = JsonSerializer.Serialize(body, JsonOptions);
+            request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        }
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<T> DeleteAsync<T>(
         string path,
         Dictionary<string, string?>? queryParams = null,

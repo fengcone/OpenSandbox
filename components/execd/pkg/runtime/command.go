@@ -97,6 +97,8 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 	if err != nil {
 		return fmt.Errorf("failed to get stdlog descriptor: %w", err)
 	}
+	defer stdout.Close()
+	defer stderr.Close()
 	stdoutPath := c.stdoutFileName(session)
 	stderrPath := c.stderrFileName(session)
 
@@ -135,6 +137,8 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 
 	err = cmd.Start()
 	if err != nil {
+		close(done)
+		wg.Wait()
 		request.Hooks.OnExecuteInit(session)
 		request.Hooks.OnExecuteError(&execute.ErrorOutput{EName: "CommandExecError", EValue: err.Error()})
 		log.Error("CommandExecError: error starting commands: %v", err)
@@ -246,7 +250,11 @@ func (c *Controller) runBackgroundCommand(ctx context.Context, cancel context.Ca
 	cmd.Env = mergeEnvs(os.Environ(), extraEnv)
 
 	// use DevNull as stdin so interactive programs exit immediately.
-	cmd.Stdin = os.NewFile(uintptr(syscall.Stdin), os.DevNull)
+	devNull, err := os.Open(os.DevNull)
+	if err == nil {
+		cmd.Stdin = devNull
+		defer devNull.Close()
+	}
 
 	err = cmd.Start()
 	kernel := &commandKernel{

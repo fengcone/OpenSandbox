@@ -22,16 +22,16 @@ enforce the same preconditions before performing runtime-specific work.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence
 
 from fastapi import HTTPException, status
 import re
 
-from src.services.constants import SandboxErrorCodes
+from src.services.constants import RESERVED_LABEL_PREFIX, SandboxErrorCodes
 
 if TYPE_CHECKING:
-    from src.api.schema import NetworkPolicy, Volume
+    from src.api.schema import NetworkPolicy, OSSFS, Volume
     from src.config import EgressConfig
 
 
@@ -102,6 +102,17 @@ def ensure_metadata_labels(metadata: Optional[Dict[str, str]]) -> None:
                     "message": "Metadata keys and values must be strings.",
                 },
             )
+        if key.startswith(RESERVED_LABEL_PREFIX):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": SandboxErrorCodes.INVALID_METADATA_LABEL,
+                    "message": (
+                        f"Metadata key '{key}' uses the reserved prefix '{RESERVED_LABEL_PREFIX}'. "
+                        "Keys under this prefix are managed by the system and cannot be set via metadata."
+                    ),
+                },
+            )
         if not _is_valid_label_key(key):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -165,6 +176,59 @@ def ensure_valid_port(port: int) -> None:
                 "message": "Port must be between 1 and 65535.",
             },
         )
+
+
+def ensure_timeout_within_limit(timeout_seconds: Optional[int], max_timeout_seconds: Optional[int]) -> None:
+    """
+    Validate that a requested sandbox TTL does not exceed the configured limit.
+
+    Args:
+        timeout_seconds: Requested sandbox TTL in seconds, or None for manual cleanup.
+        max_timeout_seconds: Configured maximum TTL in seconds, or None to disable the limit.
+
+    Raises:
+        HTTPException: When the timeout exceeds the configured maximum.
+    """
+    if timeout_seconds is None:
+        return
+
+    calculate_expiration_or_raise(datetime.now(timezone.utc), timeout_seconds)
+
+    if max_timeout_seconds is None:
+        return
+
+    if timeout_seconds > max_timeout_seconds:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": SandboxErrorCodes.INVALID_PARAMETER,
+                "message": (
+                    f"Sandbox timeout {timeout_seconds}s exceeds configured maximum "
+                    f"of {max_timeout_seconds}s."
+                ),
+            },
+        )
+
+
+def calculate_expiration_or_raise(created_at: datetime, timeout_seconds: int) -> datetime:
+    """
+    Compute an expiration timestamp and convert datetime overflow into a 400 error.
+
+    Raises:
+        HTTPException: When the timeout value is too large to represent safely.
+    """
+    try:
+        return created_at + timedelta(seconds=timeout_seconds)
+    except (OverflowError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": SandboxErrorCodes.INVALID_PARAMETER,
+                "message": (
+                    f"Sandbox timeout {timeout_seconds}s is too large to represent safely."
+                ),
+            },
+        ) from exc
 
 
 # Volume name must be a valid DNS label
@@ -390,6 +454,70 @@ def ensure_valid_pvc_name(claim_name: str) -> None:
         )
 
 
+def ensure_valid_ossfs_volume(ossfs: "OSSFS") -> None:
+    """
+    Validate OSSFS backend fields.
+
+    Args:
+        ossfs: OSSFS backend model.
+
+    Raises:
+        HTTPException: When any OSSFS field is invalid.
+    """
+    if not isinstance(ossfs.bucket, str) or not ossfs.bucket.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": SandboxErrorCodes.INVALID_OSSFS_BUCKET,
+                "message": "OSSFS bucket cannot be empty.",
+            },
+        )
+
+    if not ossfs.endpoint.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": SandboxErrorCodes.INVALID_OSSFS_ENDPOINT,
+                "message": "OSSFS endpoint cannot be empty.",
+            },
+        )
+
+    if ossfs.options is not None:
+        for opt in ossfs.options:
+            if not isinstance(opt, str) or not opt.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": SandboxErrorCodes.INVALID_OSSFS_OPTION,
+                        "message": "OSSFS options must be non-empty strings.",
+                    },
+                )
+            normalized = opt.strip()
+            if normalized.startswith("-"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": SandboxErrorCodes.INVALID_OSSFS_OPTION,
+                        "message": (
+                            "OSSFS options must be raw option payloads without '-' prefix "
+                            "(e.g. 'allow_other', 'uid=1000')."
+                        ),
+                    },
+                )
+
+    if not ossfs.access_key_id or not ossfs.access_key_secret:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": SandboxErrorCodes.INVALID_OSSFS_CREDENTIALS,
+                "message": (
+                    "OSSFS inline credentials are required: "
+                    "accessKeyId and accessKeySecret must be provided."
+                ),
+            },
+        )
+
+
 def ensure_egress_configured(
     network_policy: Optional["NetworkPolicy"],
     egress_config: Optional["EgressConfig"],
@@ -432,7 +560,7 @@ def ensure_volumes_valid(
     - Exactly one backend per volume
     - Valid mount paths
     - Valid subPaths
-    - Backend-specific validation (host path, pvc name)
+    - Backend-specific validation (host path, pvc name, ossfs config)
 
     Args:
         volumes: List of volumes to validate (optional).
@@ -470,6 +598,7 @@ def ensure_volumes_valid(
         backends_specified = sum([
             volume.host is not None,
             volume.pvc is not None,
+            volume.ossfs is not None,
         ])
 
         if backends_specified == 0:
@@ -477,7 +606,10 @@ def ensure_volumes_valid(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
                     "code": SandboxErrorCodes.INVALID_VOLUME_BACKEND,
-                    "message": f"Volume '{volume.name}' must specify exactly one backend (host, pvc), but none was provided.",
+                    "message": (
+                        f"Volume '{volume.name}' must specify exactly one backend "
+                        "(host, pvc, ossfs), but none was provided."
+                    ),
                 },
             )
 
@@ -486,7 +618,10 @@ def ensure_volumes_valid(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
                     "code": SandboxErrorCodes.INVALID_VOLUME_BACKEND,
-                    "message": f"Volume '{volume.name}' must specify exactly one backend (host, pvc), but multiple were provided.",
+                    "message": (
+                        f"Volume '{volume.name}' must specify exactly one backend "
+                        "(host, pvc, ossfs), but multiple were provided."
+                    ),
                 },
             )
 
@@ -496,6 +631,9 @@ def ensure_volumes_valid(
 
         if volume.pvc is not None:
             ensure_valid_pvc_name(volume.pvc.claim_name)
+
+        if volume.ossfs is not None:
+            ensure_valid_ossfs_volume(volume.ossfs)
 
 
 __all__ = [
@@ -509,5 +647,6 @@ __all__ = [
     "ensure_valid_sub_path",
     "ensure_valid_host_path",
     "ensure_valid_pvc_name",
+    "ensure_valid_ossfs_volume",
     "ensure_volumes_valid",
 ]

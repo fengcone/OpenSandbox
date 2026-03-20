@@ -115,6 +115,17 @@ sandbox = await Sandbox.resume(
 # 获取当前状态
 info = await sandbox.get_info()
 print(f"当前状态: {info.status.state}")
+print(f"过期时间: {info.expires_at}")  # 使用手动清理模式时为 None
+```
+
+通过传入 `timeout=None` 创建一个不会自动过期的沙箱：
+
+```python
+manual = await Sandbox.create(
+    "ubuntu",
+    connection_config=config,
+    timeout=None,
+)
 ```
 
 ### 2. 自定义健康检查
@@ -294,6 +305,8 @@ config = ConnectionConfig(
 | `network_policy` | 可选的出站网络策略（egress） | -                         |
 | `ready_timeout` | 等待沙箱就绪的最大时间 | 30 秒                           |
 
+注意：`opensandbox.io/` 前缀下的 metadata key 属于系统保留标签，服务端会拒绝用户传入。
+
 ```python
 from datetime import timedelta
 
@@ -310,5 +323,20 @@ sandbox = await Sandbox.create(
         defaultAction="deny",
         egress=[NetworkRule(action="allow", target="pypi.org")],
     ),
+)
+```
+
+### 3. 运行时 Egress 策略更新
+
+运行时的 egress 查询和 patch 不再通过 lifecycle API 转发，而是由 SDK 先解析沙箱在 `18080` 端口上的 endpoint，再直接调用 sidecar 的 `/policy` API。
+
+```python
+policy = await sandbox.get_egress_policy()
+
+await sandbox.patch_egress_rules(
+    [
+        NetworkRule(action="allow", target="www.github.com"),
+        NetworkRule(action="deny", target="pypi.org"),
+    ]
 )
 ```

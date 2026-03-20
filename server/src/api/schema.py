@@ -20,7 +20,7 @@ for request/response validation and serialization.
 """
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, RootModel, model_validator
 
@@ -156,6 +156,64 @@ class PVC(BaseModel):
         populate_by_name = True
 
 
+class OSSFS(BaseModel):
+    """
+    Alibaba Cloud OSS mount backend via ossfs.
+
+    The runtime mounts a host-side OSS path under ``storage.ossfs_mount_root``
+    and then bind-mounts the resolved path into the sandbox container. Prefix
+    selection is expressed via ``Volume.subPath``.
+    In Docker runtime, OSSFS backend requires the server host to be Linux with FUSE support.
+    """
+
+    bucket: str = Field(
+        ...,
+        description="OSS bucket name.",
+        min_length=3,
+        max_length=63,
+    )
+    endpoint: str = Field(
+        ...,
+        description="OSS endpoint, e.g. 'oss-cn-hangzhou.aliyuncs.com'.",
+        min_length=1,
+    )
+    version: Literal["1.0", "2.0"] = Field(
+        "2.0",
+        description="ossfs major version used by runtime mount integration.",
+    )
+    options: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Additional ossfs mount options. Runtime encodes options by version: "
+            "1.0 => 'ossfs ... -o <option>', 2.0 => 'ossfs2 config line --<option>'. "
+            "Provide raw option payloads without leading '-'."
+        ),
+    )
+    access_key_id: Optional[str] = Field(
+        None,
+        alias="accessKeyId",
+        description="OSS access key ID for inline credentials mode.",
+        min_length=1,
+    )
+    access_key_secret: Optional[str] = Field(
+        None,
+        alias="accessKeySecret",
+        description="OSS access key secret for inline credentials mode.",
+        min_length=1,
+    )
+    class Config:
+        populate_by_name = True
+
+    @model_validator(mode="after")
+    def validate_inline_credentials(self) -> "OSSFS":
+        """Ensure inline credentials are provided for current OSSFS mode."""
+        if not self.access_key_id or not self.access_key_secret:
+            raise ValueError(
+                "OSSFS inline credentials are required: accessKeyId and accessKeySecret."
+            )
+        return self
+
+
 class Volume(BaseModel):
     """
     Storage mount definition for a sandbox.
@@ -180,6 +238,10 @@ class Volume(BaseModel):
         None,
         description="Platform-managed named volume backend (PVC in Kubernetes, named volume in Docker).",
     )
+    ossfs: Optional[OSSFS] = Field(
+        None,
+        description="OSSFS mount backend.",
+    )
     mount_path: str = Field(
         ...,
         alias="mountPath",
@@ -203,12 +265,12 @@ class Volume(BaseModel):
     @model_validator(mode="after")
     def validate_exactly_one_backend(self) -> "Volume":
         """Ensure exactly one backend type is specified."""
-        backends = [self.host, self.pvc]
+        backends = [self.host, self.pvc, self.ossfs]
         specified = [b for b in backends if b is not None]
         if len(specified) == 0:
-            raise ValueError("Exactly one backend (host, pvc) must be specified, but none was provided.")
+            raise ValueError("Exactly one backend (host, pvc, ossfs) must be specified, but none was provided.")
         if len(specified) > 1:
-            raise ValueError("Exactly one backend (host, pvc) must be specified, but multiple were provided.")
+            raise ValueError("Exactly one backend (host, pvc, ossfs) must be specified, but multiple were provided.")
         return self
 
 
@@ -251,11 +313,16 @@ class CreateSandboxRequest(BaseModel):
     Request to create a new sandbox from a container image.
     """
     image: ImageSpec = Field(..., description="Container image specification for the sandbox")
-    timeout: int = Field(
-        ...,
+    timeout: Optional[int] = Field(
+        None,
         ge=60,
-        le=86400,
-        description="Sandbox timeout in seconds (60-86400). The sandbox will automatically terminate after this duration.",
+        description=(
+            "Sandbox timeout in seconds (minimum 60). "
+            "The maximum is controlled by server.max_sandbox_timeout_seconds. "
+            "When omitted or null, the sandbox will not auto-terminate and must be deleted explicitly. "
+            "Note: manual cleanup support is runtime-dependent; Kubernetes providers may reject "
+            "null timeout when the workload provider does not support non-expiring sandboxes."
+        ),
     )
     resource_limits: ResourceLimits = Field(
         ...,
@@ -309,7 +376,11 @@ class CreateSandboxResponse(BaseModel):
     id: str = Field(..., description="Unique sandbox identifier")
     status: SandboxStatus = Field(..., description="Current lifecycle status and detailed state information")
     metadata: Optional[Dict[str, str]] = Field(None, description="Custom metadata from creation request")
-    expires_at: datetime = Field(..., alias="expiresAt", description="Timestamp when sandbox will auto-terminate")
+    expires_at: Optional[datetime] = Field(
+        None,
+        alias="expiresAt",
+        description="Timestamp when sandbox will auto-terminate. Null when manual cleanup is enabled.",
+    )
     created_at: datetime = Field(..., alias="createdAt", description="Sandbox creation timestamp")
     entrypoint: List[str] = Field(..., description="Entry process specification from creation request")
 
@@ -328,7 +399,11 @@ class Sandbox(BaseModel):
     status: SandboxStatus = Field(..., description="Current lifecycle status and detailed state information")
     metadata: Optional[Dict[str, str]] = Field(None, description="Custom metadata from creation request")
     entrypoint: List[str] = Field(..., description="The command to execute as the sandbox's entry process")
-    expires_at: datetime = Field(..., alias="expiresAt", description="Timestamp when sandbox will auto-terminate")
+    expires_at: Optional[datetime] = Field(
+        None,
+        alias="expiresAt",
+        description="Timestamp when sandbox will auto-terminate. Null when manual cleanup is enabled.",
+    )
     created_at: datetime = Field(..., alias="createdAt", description="Sandbox creation timestamp")
 
     class Config:

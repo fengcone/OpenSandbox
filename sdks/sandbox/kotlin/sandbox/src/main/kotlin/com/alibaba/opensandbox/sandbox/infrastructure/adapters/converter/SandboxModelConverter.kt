@@ -50,6 +50,8 @@ import com.alibaba.opensandbox.sandbox.api.models.PaginationInfo as ApiPaginatio
 import com.alibaba.opensandbox.sandbox.api.models.Sandbox as ApiSandbox
 import com.alibaba.opensandbox.sandbox.api.models.SandboxStatus as ApiSandboxStatus
 import com.alibaba.opensandbox.sandbox.api.models.Volume as ApiVolume
+import com.alibaba.opensandbox.sandbox.api.models.egress.NetworkPolicy as ApiEgressNetworkPolicy
+import com.alibaba.opensandbox.sandbox.api.models.egress.NetworkRule as ApiEgressNetworkRule
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxStatus as DomainSandboxStatus
 
 internal object SandboxModelConverter {
@@ -106,6 +108,76 @@ internal object SandboxModelConverter {
         )
     }
 
+    fun NetworkRule.toApiNetworkRule(): ApiNetworkRule {
+        val action =
+            when (this.action) {
+                NetworkRule.Action.ALLOW -> ApiNetworkRule.Action.allow
+                NetworkRule.Action.DENY -> ApiNetworkRule.Action.deny
+            }
+        return ApiNetworkRule(action = action, target = this.target)
+    }
+
+    fun NetworkRule.toApiEgressNetworkRule(): ApiEgressNetworkRule {
+        val action =
+            when (this.action) {
+                NetworkRule.Action.ALLOW -> ApiEgressNetworkRule.Action.allow
+                NetworkRule.Action.DENY -> ApiEgressNetworkRule.Action.deny
+            }
+        return ApiEgressNetworkRule(action = action, target = this.target)
+    }
+
+    fun ApiNetworkRule.toDomainNetworkRule(): NetworkRule {
+        val action =
+            when (this.action) {
+                ApiNetworkRule.Action.allow -> NetworkRule.Action.ALLOW
+                ApiNetworkRule.Action.deny -> NetworkRule.Action.DENY
+            }
+        return NetworkRule
+            .builder()
+            .action(action)
+            .target(this.target)
+            .build()
+    }
+
+    fun ApiNetworkPolicy.toDomainNetworkPolicy(): NetworkPolicy {
+        val defaultAction =
+            when (this.defaultAction) {
+                ApiNetworkPolicy.DefaultAction.allow -> NetworkPolicy.DefaultAction.ALLOW
+                ApiNetworkPolicy.DefaultAction.deny, null -> NetworkPolicy.DefaultAction.DENY
+            }
+        return NetworkPolicy
+            .builder()
+            .defaultAction(defaultAction)
+            .egress(this.egress?.map { it.toDomainNetworkRule() } ?: emptyList())
+            .build()
+    }
+
+    fun ApiEgressNetworkRule.toDomainEgressNetworkRule(): NetworkRule {
+        val action =
+            when (this.action) {
+                ApiEgressNetworkRule.Action.allow -> NetworkRule.Action.ALLOW
+                ApiEgressNetworkRule.Action.deny -> NetworkRule.Action.DENY
+            }
+        return NetworkRule
+            .builder()
+            .action(action)
+            .target(this.target)
+            .build()
+    }
+
+    fun ApiEgressNetworkPolicy.toDomainEgressNetworkPolicy(): NetworkPolicy {
+        val defaultAction =
+            when (this.defaultAction) {
+                ApiEgressNetworkPolicy.DefaultAction.allow -> NetworkPolicy.DefaultAction.ALLOW
+                ApiEgressNetworkPolicy.DefaultAction.deny, null -> NetworkPolicy.DefaultAction.DENY
+            }
+        return NetworkPolicy
+            .builder()
+            .defaultAction(defaultAction)
+            .egress(this.egress?.map { it.toDomainEgressNetworkRule() } ?: emptyList())
+            .build()
+    }
+
     /**
      * Converts Domain Host -> API Host
      */
@@ -139,7 +211,7 @@ internal object SandboxModelConverter {
         entrypoint: List<String>,
         env: Map<String, String>,
         metadata: Map<String, String>,
-        timeout: Duration,
+        timeout: Duration?,
         resource: Map<String, String>,
         networkPolicy: NetworkPolicy?,
         extensions: Map<String, String>,
@@ -148,9 +220,9 @@ internal object SandboxModelConverter {
         return CreateSandboxRequest(
             image = spec.toApiImageSpec(),
             entrypoint = entrypoint,
+            timeout = timeout?.seconds?.toInt(),
             env = env,
             metadata = metadata,
-            timeout = timeout.seconds.toInt(),
             resourceLimits = resource,
             networkPolicy = networkPolicy?.toApiNetworkPolicy(),
             extensions = extensions,

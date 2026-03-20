@@ -73,6 +73,10 @@ func main() {
 	var logMaxAge int
 	var logCompress bool
 
+	// Kubernetes client rate limiter options
+	var kubeClientQPS float64
+	var kubeClientBurst int
+
 	// Task executor image for pod reset support
 	var taskExecutorImage string
 	var taskExecutorResources string
@@ -102,8 +106,8 @@ func main() {
 	flag.IntVar(&logMaxBackups, "log-max-backups", 10, "Maximum number of old log files to retain")
 	flag.IntVar(&logMaxAge, "log-max-age", 30, "Maximum number of days to retain old log files")
 	flag.BoolVar(&logCompress, "log-compress", true, "Compress determines if the rotated log files should be compressed using gzip")
-
-	// Task executor image flag
+	flag.Float64Var(&kubeClientQPS, "kube-client-qps", 100, "QPS for Kubernetes client rate limiter.")
+	flag.IntVar(&kubeClientBurst, "kube-client-burst", 200, "Burst for Kubernetes client rate limiter.")
 	flag.StringVar(&taskExecutorImage, "task-executor-image", "",
 		"Task executor image for pod reset support. If not set, Reuse policy will be disabled.")
 	flag.StringVar(&taskExecutorResources, "task-executor-resources", "200m,128Mi",
@@ -218,7 +222,16 @@ func main() {
 		})
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	config := ctrl.GetConfigOrDie()
+	// Set client rate limiter if specified
+	if kubeClientQPS > 0 {
+		config.QPS = float32(kubeClientQPS)
+	}
+	if kubeClientBurst > 0 {
+		config.Burst = kubeClientBurst
+	}
+
+	mgr, err := ctrl.NewManager(config, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,

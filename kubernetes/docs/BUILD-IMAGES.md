@@ -73,13 +73,13 @@ git push origin k8s/task-executor/v0.1.0
 cd kubernetes
 
 # 构建 controller 镜像（仅本地）
-make docker-build IMG=myregistry/opensandbox-controller:v0.1.0
+make docker-build CONTROLLER_IMG=myregistry/opensandbox-controller:v0.1.0
 
 # 构建 task-executor 镜像（仅本地）
 make docker-build-task-executor TASK_EXECUTOR_IMG=myregistry/opensandbox-task-executor:v0.1.0
 
 # 推送镜像
-make docker-push IMG=myregistry/opensandbox-controller:v0.1.0
+make docker-push CONTROLLER_IMG=myregistry/opensandbox-controller:v0.1.0
 make docker-push-task-executor TASK_EXECUTOR_IMG=myregistry/opensandbox-task-executor:v0.1.0
 ```
 

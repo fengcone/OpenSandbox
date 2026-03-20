@@ -129,6 +129,13 @@ public class SandboxReadinessDiagnosticsTests
                 Metrics = Mock.Of<IExecdMetrics>()
             });
 
+        adapterFactoryMock
+            .Setup(x => x.CreateEgressStack(It.IsAny<CreateEgressStackOptions>()))
+            .Returns(new EgressStack
+            {
+                Egress = Mock.Of<IEgress>()
+            });
+
         return await Sandbox.ConnectAsync(new SandboxConnectOptions
         {
             SandboxId = "sbx-ready-diagnostics",

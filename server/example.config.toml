@@ -24,17 +24,21 @@ port = 8080
 log_level = "INFO"
 # api_key = "your-secret-api-key"  # Optional: Uncomment to enable API key authentication
 # eip = "1.2.3.4"  # Optional: External IP/hostname for endpoint URLs when returning sandbox endpoints
+# Maximum TTL for sandboxes that specify timeout. Comment out this line to disable the upper bound.
+max_sandbox_timeout_seconds = 86400
 
 [runtime]
 # Runtime selection (docker | kubernetes)
 # -----------------------------------------------------------------
 type = "docker"
-execd_image = "opensandbox/execd:v1.0.6"
+execd_image = "opensandbox/execd:v1.0.7"
 
 [egress]
 # Egress configuration
 # -----------------------------------------------------------------
 image = "opensandbox/egress:v1.0.3"
+# Enforcement: "dns" (DNS proxy only) or "dns+nft" (nftables + DNS).
+mode = "dns"
 
 [storage]
 # Volume and storage configuration
@@ -59,7 +63,10 @@ no_new_privileges = true
 # Optional: set an AppArmor profile name (e.g., "docker-default") when AppArmor is enabled
 apparmor_profile = ""
 # Limit process count to reduce host impact from fork bombs; set to null to disable
-pids_limit = 512
+# TODO: For production environments, it is recommended to set this to '4096' or higher to avoid
+# "can't start new thread" errors when multiple sandboxes are running concurrently.
+# See: https://github.com/alibaba/OpenSandbox/issues/447
+pids_limit = 4096
 # Seccomp profile: empty string uses Docker default; set to an absolute path for a custom profile
 seccomp_profile = ""
 

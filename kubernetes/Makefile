@@ -50,8 +50,8 @@ endif
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 OPERATOR_SDK_VERSION ?= v1.42.0
 # Image URL to use all building/pushing image targets
-# IMG defines the image for the controller manager.
-IMG ?= controller:dev
+# CONTROLLER_IMG defines the image for the controller manager.
+CONTROLLER_IMG ?= controller:dev
 # TASK_EXECUTOR_IMG defines the image for the task-executor service.
 TASK_EXECUTOR_IMG ?= task-executor:dev
 
@@ -147,10 +147,12 @@ setup-test-e2e: install-kind ## Set up a Kind cluster for e2e tests if it does n
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind. Use GINKGO_ARGS to pass additional arguments.
-	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v $(GINKGO_ARGS)
-	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e_task/ -v -ginkgo.v $(GINKGO_ARGS)
+	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) \
+		KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v $(GINKGO_ARGS)
+	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) \
+		KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e_task/ -v -ginkgo.v $(GINKGO_ARGS)
 	$(MAKE) cleanup-test-e2e
-	$(MAKE) test-gvisor
+	$(MAKE) test-gvisor CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG)
 	$(MAKE) cleanup-gvisor
 
 .PHONY: cleanup-test-e2e
@@ -163,7 +165,7 @@ install-e2e-deps:
 	@echo "Installing OpenSandbox CRDs..."
 	@$(MAKE) install
 	@echo "Installing OpenSandbox controller..."
-	@cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
+	@cd config/manager && $(KUSTOMIZE) edit set image controller=$(CONTROLLER_IMG)
 	@$(KUSTOMIZE) build config/default | kubectl apply -f -
 	@echo "Waiting for controller to be ready..."
 	@kubectl wait --for=condition=available --timeout=120s deployment -n opensandbox-system opensandbox-controller-manager || \
@@ -210,16 +212,17 @@ cleanup-gvisor: ## Tear down gVisor Kind cluster
 .PHONY: install-gvisor-deps
 install-gvisor-deps:
 	@echo "Building and loading controller image into gVisor Kind cluster..."
-	@$(MAKE) docker-build-controller
-	@$(KIND) load docker-image --name $(GVISOR_KIND_CLUSTER) $(IMG)
-	@$(MAKE) install-e2e-deps
+	@$(MAKE) docker-build-controller CONTROLLER_IMG=$(CONTROLLER_IMG)
+	@$(KIND) load docker-image --name $(GVISOR_KIND_CLUSTER) $(CONTROLLER_IMG)
+	@$(MAKE) install-e2e-deps CONTROLLER_IMG=$(CONTROLLER_IMG)
 
 .PHONY: test-gvisor
 test-gvisor: setup-gvisor install-gvisor-deps ## Run gVisor RuntimeClass e2e tests
 	@echo "Installing gVisor RuntimeClass resources..."
 	@kubectl apply -f test/e2e_runtime/gvisor/testdata/runtimeclass.yaml
 	@echo "Running gVisor E2E tests..."
-	KIND_CLUSTER=$(GVISOR_KIND_CLUSTER) go test ./test/e2e_runtime/gvisor -v -ginkgo.v $(GINKGO_ARGS)
+	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) \
+		KIND_CLUSTER=$(GVISOR_KIND_CLUSTER) go test ./test/e2e_runtime/gvisor -v -ginkgo.v $(GINKGO_ARGS)
 	$(MAKE) cleanup-gvisor
 
 .PHONY: lint
@@ -257,13 +260,13 @@ task-executor-run: ## Run task-executor from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 # docker-build: ## Build docker image with the manager.
-#	$(CONTAINER_TOOL) build -t ${IMG} .
+#	$(CONTAINER_TOOL) build -t ${CONTROLLER_IMG} .
 
 docker-build: docker-build-controller
 
 .PHONY: docker-build-controller
 docker-build-controller: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build $(DOCKER_BUILD_ARGS) --build-arg PACKAGE=cmd/controller/main.go -t ${IMG} .
+	$(CONTAINER_TOOL) build $(DOCKER_BUILD_ARGS) --build-arg PACKAGE=cmd/controller/main.go -t ${CONTROLLER_IMG} .
 
 .PHONY: docker-build-task-executor
 docker-build-task-executor: ## Build docker image with task-executor.
@@ -271,13 +274,13 @@ docker-build-task-executor: ## Build docker image with task-executor.
 
 .PHONY: docker-push
 # docker-push: ## Push docker image with the manager.
-#	$(CONTAINER_TOOL) push ${IMG}
+#	$(CONTAINER_TOOL) push ${CONTROLLER_IMG}
 
 docker-push: docker-push-controller
 
 .PHONY: docker-push-controller
 docker-push-controller: ## Push docker image with the manager.
-	$(CONTAINER_TOOL) push ${IMG}
+	$(CONTAINER_TOOL) push ${CONTROLLER_IMG}
 
 .PHONY: docker-push-task-executor
 docker-push-task-executor: ## Push docker image with task-executor.
@@ -295,10 +298,10 @@ docker-stop-task-executor: ## Stop task-executor docker container.
 	-@$(CONTAINER_TOOL) rm task-executor-local || true
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
-# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
+# architectures. (i.e. make docker-buildx CONTROLLER_IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
 # - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-# - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
+# be able to push the image to your registry (i.e. if you do not set a valid value via CONTROLLER_IMG=<myregistry/image:<tag>> then the export will fail)
 # To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
 PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 .PHONY: docker-buildx
@@ -307,14 +310,14 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name sandbox-k8s-builder
 	$(CONTAINER_TOOL) buildx use sandbox-k8s-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${CONTROLLER_IMG} -f Dockerfile.cross .
 	- $(CONTAINER_TOOL) buildx rm sandbox-k8s-builder
 	rm Dockerfile.cross
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${CONTROLLER_IMG}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 ##@ Deployment
@@ -333,7 +336,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${CONTROLLER_IMG}
 	$(KUSTOMIZE) build config/default | sed 's|TASK_EXECUTOR_IMAGE_PLACEHOLDER|$(TASK_EXECUTOR_IMG)|g' | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -428,7 +431,7 @@ endif
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
 	$(OPERATOR_SDK) generate kustomize manifests -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
+	cd config/manager && $(KUSTOMIZE) edit set image controller=$(CONTROLLER_IMG)
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	$(OPERATOR_SDK) bundle validate ./bundle
 
@@ -438,7 +441,7 @@ bundle-build: ## Build the bundle image.
 
 .PHONY: bundle-push
 bundle-push: ## Push the bundle image.
-	$(MAKE) docker-push IMG=$(BUNDLE_IMG)
+	$(MAKE) docker-push CONTROLLER_IMG=$(BUNDLE_IMG)
 
 .PHONY: opm
 OPM = $(LOCALBIN)/opm
@@ -479,7 +482,7 @@ catalog-build: opm ## Build a catalog image.
 # Push the catalog image.
 .PHONY: catalog-push
 catalog-push: ## Push a catalog image.
-	$(MAKE) docker-push IMG=$(CATALOG_IMG)
+	$(MAKE) docker-push CONTROLLER_IMG=$(CATALOG_IMG)
 
 ##@ Helm
 

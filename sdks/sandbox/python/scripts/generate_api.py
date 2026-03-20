@@ -111,6 +111,60 @@ def generate_execd_api_client() -> None:
                 break
 
 
+def generate_egress_api_client() -> None:
+    """Generate the egress API client from OpenAPI spec."""
+    print("\n🔧 Generating egress API client...")
+
+    spec_path = Path("../../../specs/egress-api.yaml").resolve()
+    output_path = Path("src/opensandbox/api/egress")
+    config_path = Path("scripts/openapi_egress_config.yaml")
+    temp_output = Path("temp_egress_client")
+
+    if not spec_path.exists():
+        print(f"❌ OpenAPI spec not found at {spec_path}")
+        print("Please ensure the specs directory is available")
+        return
+
+    if output_path.exists():
+        shutil.rmtree(output_path)
+
+    if temp_output.exists():
+        shutil.rmtree(temp_output)
+
+    cmd = [
+        "openapi-python-client",
+        "generate",
+        "--path",
+        str(spec_path),
+        "--output-path",
+        str(temp_output),
+        "--config",
+        str(config_path),
+        "--overwrite",
+    ]
+
+    try:
+        run_command(cmd, "Generating egress API client")
+    except subprocess.CalledProcessError:
+        print("❌ Failed to generate egress API client")
+        return
+
+    generated_package = temp_output / "opensandbox_api_egress"
+    if generated_package.exists():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(generated_package), str(output_path))
+        shutil.rmtree(temp_output)
+        print(f"✅ Moved generated code to {output_path}")
+    else:
+        for item in temp_output.iterdir():
+            if item.is_dir() and not item.name.startswith("."):
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(item), str(output_path))
+                shutil.rmtree(temp_output)
+                print(f"✅ Moved generated code from {item} to {output_path}")
+                break
+
+
 def generate_sandbox_lifecycle_api() -> None:
     """Generate the sandbox lifecycle API client."""
     print("\n🔧 Generating sandbox lifecycle API client...")
@@ -195,6 +249,54 @@ def add_license_headers(root: Path) -> None:
     )
 
 
+def patch_lifecycle_nullable_nested_models(root: Path) -> None:
+    """Patch generated lifecycle models that openapi-python-client does not null-handle."""
+    replacements = {
+        root / "models" / "image_spec.py": [
+            (
+                "        if isinstance(_auth, Unset):\n            auth = UNSET\n",
+                "        if isinstance(_auth, Unset) or _auth is None:\n            auth = UNSET\n",
+            )
+        ],
+        root / "models" / "create_sandbox_response.py": [
+            (
+                "        if isinstance(_metadata, Unset):\n            metadata = UNSET\n",
+                "        if isinstance(_metadata, Unset) or _metadata is None:\n            metadata = UNSET\n",
+            )
+        ],
+        root / "models" / "sandbox.py": [
+            (
+                "        if isinstance(_metadata, Unset):\n            metadata = UNSET\n",
+                "        if isinstance(_metadata, Unset) or _metadata is None:\n            metadata = UNSET\n",
+            )
+        ],
+        root / "models" / "sandbox_status.py": [
+            (
+                "        if isinstance(_last_transition_at, Unset):\n            last_transition_at = UNSET\n",
+                "        if isinstance(_last_transition_at, Unset) or _last_transition_at is None:\n            last_transition_at = UNSET\n",
+            )
+        ],
+    }
+
+    patched_files = 0
+    for file_path, file_replacements in replacements.items():
+        if not file_path.exists():
+            continue
+
+        content = file_path.read_text(encoding="utf-8")
+        updated = content
+        for old, new in file_replacements:
+            if old in updated:
+                updated = updated.replace(old, new, 1)
+
+        if updated != content:
+            file_path.write_text(updated, encoding="utf-8")
+            patched_files += 1
+
+    if patched_files:
+        print(f"✅ Patched nullable lifecycle model handling in {patched_files} files")
+
+
 def post_process_generated_code() -> None:
     """Post-process the generated code to ensure proper package structure."""
     print("\n🔧 Post-processing generated code...")
@@ -211,8 +313,10 @@ def post_process_generated_code() -> None:
 
     # Ensure all generated python files have a license header.
     add_license_headers(Path("src/opensandbox/api/execd"))
+    add_license_headers(Path("src/opensandbox/api/egress"))
     add_license_headers(Path("src/opensandbox/api/lifecycle"))
     add_license_headers(Path("src/opensandbox/api"))
+    patch_lifecycle_nullable_nested_models(Path("src/opensandbox/api/lifecycle"))
 
 
 def main() -> None:
@@ -240,6 +344,7 @@ def main() -> None:
 
     # Generate API clients
     generate_execd_api_client()
+    generate_egress_api_client()
     generate_sandbox_lifecycle_api()
 
     # Post-process
@@ -248,6 +353,7 @@ def main() -> None:
     print("\n✅ API client generation completed!")
     print("Generated clients:")
     print("  - src/opensandbox/api/execd/")
+    print("  - src/opensandbox/api/egress/")
     print("  - src/opensandbox/api/lifecycle/")
     print("\nThe generated clients support custom httpx.AsyncClient injection:")
     print("  from opensandbox.api.execd import Client, AuthenticatedClient")

@@ -58,7 +58,7 @@ var _ = Describe("Manager", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("CONTROLLER_IMG=%s", utils.ControllerImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 	})
@@ -187,7 +187,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("creating a basic Pool")
 			poolYAML, err := renderTemplate("testdata/pool-basic.yaml", map[string]interface{}{
 				"PoolName":     poolName,
-				"SandboxImage": sandboxImage,
+				"SandboxImage": utils.SandboxImage,
 				"Namespace":    testNamespace,
 				"BufferMax":    bufferMax,
 				"BufferMin":    bufferMin,
@@ -251,7 +251,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("creating a Pool with initial capacity")
 			poolYAML, err := renderTemplate("testdata/pool-basic.yaml", map[string]interface{}{
 				"PoolName":     poolName,
-				"SandboxImage": sandboxImage,
+				"SandboxImage": utils.SandboxImage,
 				"Namespace":    testNamespace,
 				"BufferMax":    3,
 				"BufferMin":    1,
@@ -285,7 +285,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("increasing poolMin to trigger scale up")
 			poolYAML, err = renderTemplate("testdata/pool-basic.yaml", map[string]interface{}{
 				"PoolName":     poolName,
-				"SandboxImage": sandboxImage,
+				"SandboxImage": utils.SandboxImage,
 				"Namespace":    testNamespace,
 				"BufferMax":    3,
 				"BufferMin":    1,
@@ -318,7 +318,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("decreasing poolMax to below current total")
 			poolYAML, err = renderTemplate("testdata/pool-basic.yaml", map[string]interface{}{
 				"PoolName":     poolName,
-				"SandboxImage": sandboxImage,
+				"SandboxImage": utils.SandboxImage,
 				"Namespace":    testNamespace,
 				"BufferMax":    2,
 				"BufferMin":    1,
@@ -361,7 +361,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("creating a Pool with initial template")
 			poolYAML, err := renderTemplate("testdata/pool-basic.yaml", map[string]interface{}{
 				"PoolName":     poolName,
-				"SandboxImage": sandboxImage,
+				"SandboxImage": utils.SandboxImage,
 				"Namespace":    testNamespace,
 				"BufferMax":    3,
 				"BufferMin":    2,
@@ -455,7 +455,7 @@ var _ = Describe("Manager", Ordered, func() {
 			updatedPoolYAML, err := renderTemplate("testdata/pool-with-env.yaml", map[string]interface{}{
 				"PoolName":     poolName,
 				"Namespace":    testNamespace,
-				"SandboxImage": sandboxImage,
+				"SandboxImage": utils.SandboxImage,
 				"BufferMax":    3,
 				"BufferMin":    2,
 				"PoolMax":      5,
@@ -627,7 +627,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("creating a non-pooled BatchSandbox")
 			bsYAML, err := renderTemplate("testdata/batchsandbox-non-pooled.yaml", map[string]interface{}{
 				"BatchSandboxName": batchSandboxName,
-				"SandboxImage":     sandboxImage,
+				"SandboxImage":     utils.SandboxImage,
 				"Namespace":        testNamespace,
 				"Replicas":         replicas,
 			})
@@ -746,7 +746,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("creating a Pool")
 			poolYAML, err := renderTemplate("testdata/pool-basic.yaml", map[string]interface{}{
 				"PoolName":     poolName,
-				"SandboxImage": sandboxImage,
+				"SandboxImage": utils.SandboxImage,
 				"Namespace":    testNamespace,
 				"BufferMax":    3,
 				"BufferMin":    2,
@@ -776,7 +776,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("creating a pooled BatchSandbox")
 			bsYAML, err := renderTemplate("testdata/batchsandbox-pooled-no-expire.yaml", map[string]interface{}{
 				"BatchSandboxName": batchSandboxName,
-				"SandboxImage":     sandboxImage,
+				"SandboxImage":     utils.SandboxImage,
 				"Namespace":        testNamespace,
 				"Replicas":         replicas,
 				"PoolName":         poolName,
@@ -887,7 +887,7 @@ var _ = Describe("Manager", Ordered, func() {
 				"Namespace":        testNamespace,
 				"Replicas":         replicas,
 				"ExpireTime":       expireTime,
-				"SandboxImage":     sandboxImage,
+				"SandboxImage":     utils.SandboxImage,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -989,7 +989,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("creating a Pool")
 			poolYAML, err := renderTemplate("testdata/pool-basic.yaml", map[string]interface{}{
 				"PoolName":     poolName,
-				"SandboxImage": sandboxImage,
+				"SandboxImage": utils.SandboxImage,
 				"Namespace":    testNamespace,
 				"BufferMax":    3,
 				"BufferMin":    2,
@@ -1026,7 +1026,7 @@ var _ = Describe("Manager", Ordered, func() {
 			expireTime := time.Now().Add(45 * time.Second).UTC().Format(time.RFC3339)
 			bsYAML, err := renderTemplate("testdata/batchsandbox-pooled.yaml", map[string]interface{}{
 				"BatchSandboxName": batchSandboxName,
-				"SandboxImage":     sandboxImage,
+				"SandboxImage":     utils.SandboxImage,
 				"Namespace":        testNamespace,
 				"Replicas":         replicas,
 				"PoolName":         poolName,
@@ -1150,7 +1150,7 @@ var _ = Describe("Manager", Ordered, func() {
 			poolYAML, err := renderTemplate(poolTemplateFile, map[string]interface{}{
 				"PoolName":          poolName,
 				"Namespace":         testNamespace,
-				"TaskExecutorImage": taskExecutorImage,
+				"TaskExecutorImage": utils.TaskExecutorImage,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1180,7 +1180,7 @@ var _ = Describe("Manager", Ordered, func() {
 				"Namespace":         testNamespace,
 				"Replicas":          replicas,
 				"PoolName":          poolName,
-				"TaskExecutorImage": taskExecutorImage,
+				"TaskExecutorImage": utils.TaskExecutorImage,
 			})
 			Expect(err).NotTo(HaveOccurred())
 

@@ -21,8 +21,10 @@ import com.alibaba.opensandbox.sandbox.domain.exceptions.InvalidArgumentExceptio
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxInternalException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxReadyTimeoutException
+import com.alibaba.opensandbox.sandbox.domain.models.execd.DEFAULT_EGRESS_PORT
 import com.alibaba.opensandbox.sandbox.domain.models.execd.DEFAULT_EXECD_PORT
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkRule
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxImageSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxInfo
@@ -30,6 +32,7 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxMetrics
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxRenewResponse
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.Volume
 import com.alibaba.opensandbox.sandbox.domain.services.Commands
+import com.alibaba.opensandbox.sandbox.domain.services.Egress
 import com.alibaba.opensandbox.sandbox.domain.services.Filesystem
 import com.alibaba.opensandbox.sandbox.domain.services.Health
 import com.alibaba.opensandbox.sandbox.domain.services.Metrics
@@ -83,6 +86,7 @@ class Sandbox internal constructor(
     private val commandService: Commands,
     private val healthService: Health,
     private val metricsService: Metrics,
+    private val egressService: Egress,
     private val customHealthCheck: ((sandbox: Sandbox) -> Boolean)? = null,
     private val httpClientProvider: HttpClientProvider,
 ) : AutoCloseable {
@@ -199,6 +203,13 @@ class Sandbox internal constructor(
                 val commandService = factory.createCommands(execdEndpoint)
                 val metricsService = factory.createMetrics(execdEndpoint)
                 val healthService = factory.createHealth(execdEndpoint)
+                val egressEndpoint =
+                    sandboxService.getSandboxEndpoint(
+                        sandboxId,
+                        DEFAULT_EGRESS_PORT,
+                        connectionConfig.useServerProxy,
+                    )
+                val egressService = factory.createEgress(egressEndpoint)
 
                 val sandbox =
                     Sandbox(
@@ -208,6 +219,7 @@ class Sandbox internal constructor(
                         commandService = commandService,
                         metricsService = metricsService,
                         healthService = healthService,
+                        egressService = egressService,
                         customHealthCheck = healthCheck,
                         httpClientProvider = httpClientProvider,
                     )
@@ -276,7 +288,7 @@ class Sandbox internal constructor(
             entrypoint: List<String>,
             env: Map<String, String>,
             metadata: Map<String, String>,
-            timeout: Duration,
+            timeout: Duration?,
             readyTimeout: Duration,
             resource: Map<String, String>,
             networkPolicy: NetworkPolicy?,
@@ -287,8 +299,9 @@ class Sandbox internal constructor(
             skipHealthCheck: Boolean,
             volumes: List<Volume>?,
         ): Sandbox {
+            val timeoutLabel = if (timeout != null) "${timeout.seconds}s" else "manual-cleanup"
             return initializeSandbox(
-                operationName = "create sandbox with image ${imageSpec.image} (timeout: ${timeout.seconds}s)",
+                operationName = "create sandbox with image ${imageSpec.image} (timeout: $timeoutLabel)",
                 connectionConfig = connectionConfig,
                 healthCheck = healthCheck,
                 timeout = readyTimeout,
@@ -420,6 +433,28 @@ class Sandbox internal constructor(
     fun renew(timeout: Duration): SandboxRenewResponse {
         logger.info("Renew sandbox {} timeout, estimated expiration to {}", id, OffsetDateTime.now().plus(timeout))
         return sandboxService.renewSandboxExpiration(id, OffsetDateTime.now().plus(timeout))
+    }
+
+    /**
+     * Gets current egress policy for this sandbox.
+     *
+     * @throws SandboxException if operation fails
+     */
+    fun getEgressPolicy(): NetworkPolicy {
+        return egressService.getPolicy()
+    }
+
+    /**
+     * Patches egress rules for this sandbox using sidecar merge semantics.
+     *
+     * Incoming rules take priority over existing rules with the same target.
+     * Existing rules for other targets remain unchanged. Within one patch payload,
+     * the first rule for a target wins. The current defaultAction is preserved.
+     *
+     * @throws SandboxException if operation fails
+     */
+    fun patchEgressRules(rules: List<NetworkRule>) {
+        egressService.patchRules(rules)
     }
 
     /**
@@ -771,7 +806,7 @@ class Sandbox internal constructor(
         /**
          * Lifecycle config
          */
-        private var timeout: Duration = Duration.ofSeconds(600)
+        private var timeout: Duration? = Duration.ofSeconds(600)
         private var readyTimeout: Duration = Duration.ofSeconds(30)
         private var healthCheckPollingInterval: Duration = Duration.ofMillis(200)
         private var healthCheck: ((Sandbox) -> Boolean)? = null
@@ -1045,17 +1080,27 @@ class Sandbox internal constructor(
         /**
          * Sets the sandbox timeout (automatic termination time).
          *
-         * @param timeout Maximum sandbox lifetime
+         * @param timeout Maximum sandbox lifetime. Pass null to require explicit cleanup.
          * @return This builder for method chaining
          * @throws InvalidArgumentException if timeout is negative or zero
          */
-        fun timeout(timeout: Duration): Builder {
-            if (timeout.isNegative || timeout.isZero) {
+        fun timeout(timeout: Duration?): Builder {
+            if (timeout != null && (timeout.isNegative || timeout.isZero)) {
                 throw InvalidArgumentException(
                     message = "Timeout must be positive, got: $timeout",
                 )
             }
             this.timeout = timeout
+            return this
+        }
+
+        /**
+         * Disables automatic expiration and requires explicit cleanup.
+         *
+         * This provides a stable Java interop entrypoint for non-expiring sandboxes.
+         */
+        fun manualCleanup(): Builder {
+            this.timeout = null
             return this
         }
 

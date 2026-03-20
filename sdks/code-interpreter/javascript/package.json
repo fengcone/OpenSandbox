@@ -34,6 +34,7 @@
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "build": "tsup",
+    "test": "pnpm run build && node --test tests/*.test.mjs",
     "lint": "eslint src --max-warnings 0",
     "clean": "rm -rf dist"
   },

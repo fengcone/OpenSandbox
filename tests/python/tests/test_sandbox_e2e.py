@@ -25,6 +25,9 @@ from io import BytesIO
 
 import pytest
 from opensandbox import Sandbox
+from opensandbox.constants import DEFAULT_EGRESS_PORT
+from opensandbox.config import ConnectionConfig
+from opensandbox.exceptions import SandboxApiException
 from opensandbox.models.execd import (
     ExecutionComplete,
     ExecutionError,
@@ -41,9 +44,23 @@ from opensandbox.models.filesystem import (
     SetPermissionEntry,
     WriteEntry,
 )
-from opensandbox.models.sandboxes import Host, NetworkPolicy, NetworkRule, PVC, SandboxImageSpec, Volume
+from opensandbox.models.sandboxes import (
+    PVC,
+    Host,
+    NetworkPolicy,
+    NetworkRule,
+    SandboxImageSpec,
+    Volume,
+)
 
-from tests.base_e2e_test import create_connection_config, get_sandbox_image
+from tests.base_e2e_test import (
+    TEST_API_KEY,
+    TEST_DOMAIN,
+    TEST_PROTOCOL,
+    create_connection_config,
+    create_connection_config_server_proxy,
+    get_sandbox_image,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,8 +135,7 @@ class TestSandboxE2E:
             sandbox = request.cls.sandbox
             if sandbox is not None:
                 try:
-                    # await sandbox.kill()
-                    pass
+                    await sandbox.kill()
                 except Exception as e:
                     logger.warning("Teardown: sandbox.kill() failed: %s", e, exc_info=True)
                 try:
@@ -277,6 +293,25 @@ class TestSandboxE2E:
         finally:
             await sandbox2.close()
 
+    @pytest.mark.timeout(120)
+    @pytest.mark.order(1)
+    async def test_01b_manual_cleanup(self):
+        sandbox = await Sandbox.create(
+            image=SandboxImageSpec(get_sandbox_image()),
+            connection_config=TestSandboxE2E.connection_config,
+            timeout=None,
+            ready_timeout=timedelta(seconds=30),
+            metadata={"tag": "manual-e2e-test"},
+        )
+        try:
+            info = await sandbox.get_info()
+            assert info.expires_at is None
+            assert info.metadata is not None
+            assert info.metadata.get("tag") == "manual-e2e-test"
+        finally:
+            await sandbox.kill()
+            await sandbox.close()
+
         logger.info("TEST 1 PASSED: Sandbox lifecycle and health test completed successfully")
 
 
@@ -304,6 +339,130 @@ class TestSandboxE2E:
             assert result.error is not None
             result = await sandbox.commands.run("curl -I https://pypi.org")
             assert result.error is None
+        finally:
+            try:
+                await sandbox.kill()
+            except Exception:
+                pass
+            await sandbox.close()
+
+    @pytest.mark.timeout(180)
+    @pytest.mark.order(1)
+    async def test_01aa_network_policy_get_and_patch(self):
+        logger.info("=" * 80)
+        logger.info("TEST 1aa: networkPolicy get/patch (async)")
+        logger.info("=" * 80)
+
+        cfg = create_connection_config()
+        sandbox = await Sandbox.create(
+            image=SandboxImageSpec(get_sandbox_image()),
+            connection_config=cfg,
+            timeout=timedelta(minutes=2),
+            ready_timeout=timedelta(seconds=30),
+            network_policy=NetworkPolicy(
+                defaultAction="deny",
+                egress=[NetworkRule(action="allow", target="pypi.org")],
+            ),
+        )
+        try:
+            await asyncio.sleep(5)
+
+            # Verify get egress policy right after create.
+            policy = await sandbox.get_egress_policy()
+            assert policy.default_action == "deny"
+            assert policy.egress is not None
+            assert any(rule.target == "pypi.org" and rule.action == "allow" for rule in policy.egress)
+
+            # Baseline behavior: github blocked, pypi allowed.
+            blocked = await sandbox.commands.run("curl -I https://www.github.com")
+            assert blocked.error is not None
+            allowed = await sandbox.commands.run("curl -I https://pypi.org")
+            assert allowed.error is None
+
+            # Patch policy: allow github, deny pypi.
+            await sandbox.patch_egress_rules(
+                [
+                    NetworkRule(action="allow", target="www.github.com"),
+                    NetworkRule(action="deny", target="pypi.org"),
+                ],
+            )
+            await asyncio.sleep(2)
+
+            patched_policy = await sandbox.get_egress_policy()
+            assert patched_policy.egress is not None
+            assert any(
+                rule.target == "www.github.com" and rule.action == "allow"
+                for rule in patched_policy.egress
+            )
+            assert any(
+                rule.target == "pypi.org" and rule.action == "deny"
+                for rule in patched_policy.egress
+            )
+
+            # Behavior after patch should be flipped.
+            github_allowed = await sandbox.commands.run("curl -I https://www.github.com")
+            assert github_allowed.error is None
+            pypi_denied = await sandbox.commands.run("curl -I https://pypi.org")
+            assert pypi_denied.error is not None
+        finally:
+            try:
+                await sandbox.kill()
+            except Exception:
+                pass
+            await sandbox.close()
+
+    @pytest.mark.timeout(180)
+    @pytest.mark.order(1)
+    async def test_01ab_network_policy_get_and_patch_with_server_proxy(self):
+        logger.info("=" * 80)
+        logger.info("TEST 1ab: networkPolicy get/patch with server proxy (async)")
+        logger.info("=" * 80)
+
+        cfg = create_connection_config_server_proxy()
+        sandbox = await Sandbox.create(
+            image=SandboxImageSpec(get_sandbox_image()),
+            connection_config=cfg,
+            timeout=timedelta(minutes=2),
+            ready_timeout=timedelta(seconds=30),
+            network_policy=NetworkPolicy(
+                defaultAction="deny",
+                egress=[NetworkRule(action="allow", target="pypi.org")],
+            ),
+        )
+        try:
+            await asyncio.sleep(5)
+
+            egress_endpoint = await sandbox.get_endpoint(DEFAULT_EGRESS_PORT)
+            assert f"/sandboxes/{sandbox.id}/proxy/{DEFAULT_EGRESS_PORT}" in egress_endpoint.endpoint
+
+            policy = await sandbox.get_egress_policy()
+            assert policy.default_action == "deny"
+            assert policy.egress is not None
+            assert any(rule.target == "pypi.org" and rule.action == "allow" for rule in policy.egress)
+
+            blocked = await sandbox.commands.run("curl -I https://www.github.com")
+            assert blocked.error is not None
+            allowed = await sandbox.commands.run("curl -I https://pypi.org")
+            assert allowed.error is None
+
+            await sandbox.patch_egress_rules(
+                [
+                    NetworkRule(action="allow", target="www.github.com"),
+                    NetworkRule(action="deny", target="pypi.org"),
+                ],
+            )
+            await asyncio.sleep(2)
+
+            patched_policy = await sandbox.get_egress_policy()
+            assert patched_policy.egress is not None
+            assert any(
+                rule.target == "www.github.com" and rule.action == "allow"
+                for rule in patched_policy.egress
+            )
+            assert any(
+                rule.target == "pypi.org" and rule.action == "deny"
+                for rule in patched_policy.egress
+            )
         finally:
             try:
                 await sandbox.kill()
@@ -817,6 +976,40 @@ class TestSandboxE2E:
         assert "log-line-2" in logs_text
 
     @pytest.mark.timeout(120)
+    @pytest.mark.order(3)
+    async def test_02b_run_command_with_envs(self):
+        """Test run_command env injection via RunCommandOpts.envs."""
+        await self._ensure_sandbox_created()
+        sandbox = TestSandboxE2E.sandbox
+
+        env_key = "OPEN_SANDBOX_E2E_CMD_ENV"
+        env_value = f"env-ok-{int(time.time())}"
+        probe_command = (
+            f"sh -c 'if [ -z \"${{{env_key}:-}}\" ]; then echo \"__EMPTY__\"; "
+            f"else echo \"${{{env_key}}}\"; fi'"
+        )
+
+        # Baseline: variable should be empty when not injected.
+        baseline = await sandbox.commands.run(probe_command)
+        assert baseline.error is None
+        baseline_output = "\n".join(msg.text for msg in baseline.logs.stdout).strip()
+        assert baseline_output == "__EMPTY__"
+
+        # Inject environment variables for this command only.
+        injected = await sandbox.commands.run(
+            probe_command,
+            opts=RunCommandOpts(
+                envs={
+                    env_key: env_value,
+                    "OPEN_SANDBOX_E2E_SECOND_ENV": "second-ok",
+                }
+            ),
+        )
+        assert injected.error is None
+        injected_output = "\n".join(msg.text for msg in injected.logs.stdout).strip()
+        assert injected_output == env_value
+
+    @pytest.mark.timeout(120)
     @pytest.mark.order(4)
     async def test_03_basic_filesystem_operations(self):
         """Test basic filesystem operations."""
@@ -1217,3 +1410,21 @@ class TestSandboxE2E:
         elapsed_time = (time.time() - start_time) * 1000
         logger.info(f"✓ Sandbox resume completed in {elapsed_time:.2f} ms")
         logger.info("TEST 5 PASSED: Sandbox resume operation test completed successfully")
+
+    @pytest.mark.timeout(120)
+    @pytest.mark.order(8)
+    async def test_07_x_request_id_passthrough_on_server_error(self):
+        request_id = f"e2e-py-server-{int(time.time() * 1000)}"
+        missing_sandbox_id = f"missing-{request_id}"
+        cfg = ConnectionConfig(
+            domain=TEST_DOMAIN,
+            api_key=TEST_API_KEY,
+            request_timeout=timedelta(minutes=3),
+            protocol=TEST_PROTOCOL,
+            headers={"X-Request-ID": request_id},
+        )
+
+        with pytest.raises(SandboxApiException) as ei:
+            connected = await Sandbox.connect(sandbox_id=missing_sandbox_id, connection_config=cfg)
+            await connected.get_info()
+        assert ei.value.request_id == request_id

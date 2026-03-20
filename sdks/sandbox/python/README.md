@@ -58,6 +58,8 @@ async def main():
     except SandboxException as e:
         # Handle Sandbox specific exceptions
         print(f"Sandbox Error: [{e.error.code}] {e.error.message}")
+        # Server logs can be correlated by this request id (if available)
+        print(f"Request ID: {e.request_id}")
     except Exception as e:
         print(f"Error: {e}")
 
@@ -115,6 +117,17 @@ sandbox = await Sandbox.resume(
 # Get current status
 info = await sandbox.get_info()
 print(f"State: {info.status.state}")
+print(f"Expires: {info.expires_at}")  # None when manual cleanup mode is used
+```
+
+Create a non-expiring sandbox by passing `timeout=None`:
+
+```python
+manual = await Sandbox.create(
+    "ubuntu",
+    connection_config=config,
+    timeout=None,
+)
 ```
 
 ### 2. Custom Health Check
@@ -265,7 +278,10 @@ import httpx
 config = ConnectionConfig(
     api_key="your-key",
     domain="api.opensandbox.io",
-    headers={"X-Custom-Header": "value"},
+    headers={
+        "X-Custom-Header": "value",
+        "X-Request-ID": "trace-123",
+    },
     transport=httpx.AsyncHTTPTransport(
         limits=httpx.Limits(
             max_connections=100,
@@ -294,6 +310,9 @@ The `Sandbox.create()` allows configuring the sandbox environment.
 | `network_policy` | Optional outbound network policy (egress) | -                             |
 | `ready_timeout` | Max time to wait for sandbox to be ready | 30 seconds                      |
 
+Note: metadata keys under `opensandbox.io/` are reserved for system-managed
+labels and will be rejected by the server.
+
 ```python
 from datetime import timedelta
 
@@ -310,5 +329,27 @@ sandbox = await Sandbox.create(
         defaultAction="deny",
         egress=[NetworkRule(action="allow", target="pypi.org")],
     ),
+)
+```
+
+### 3. Runtime Egress Policy Updates
+
+Runtime egress policy reads and patches are sent directly to the sandbox egress sidecar.
+The SDK first resolves the sandbox endpoint on port `18080`, then calls the sidecar `/policy` API.
+
+Patch uses merge semantics:
+- Incoming rules take priority over existing rules with the same `target`.
+- Existing rules for other targets remain unchanged.
+- Within a single patch payload, the first rule for a `target` wins.
+- The current `defaultAction` is preserved.
+
+```python
+policy = await sandbox.get_egress_policy()
+
+await sandbox.patch_egress_rules(
+    [
+        NetworkRule(action="allow", target="www.github.com"),
+        NetworkRule(action="deny", target="pypi.org"),
+    ]
 )
 ```

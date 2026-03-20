@@ -26,19 +26,6 @@ import (
 	"github.com/alibaba/OpenSandbox/sandbox-k8s/test/utils"
 )
 
-var (
-	// projectImage is the name of the image which will be build and loaded
-	// with the code source changes to be tested.
-	projectImage = "example.com/sandbox-k8s:v0.0.1"
-
-	// taskExecutorImage is the name of the task-executor image
-	taskExecutorImage = "example.com/task-executor:v0.0.1"
-
-	// sandboxImage is a lightweight image used for sandbox containers in tests
-	// Using task-executor image instead of ubuntu:latest to avoid download issues in certain network environments
-	sandboxImage = taskExecutorImage
-)
-
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
 // temporary environment to validate project changes with the purposed to be used in CI jobs.
 // The default setup requires Kind, builds/loads the Manager Docker image locally.
@@ -52,7 +39,7 @@ var _ = BeforeSuite(func() {
 	dockerBuildArgs := os.Getenv("DOCKER_BUILD_ARGS")
 
 	By("building the manager(Operator) image")
-	makeArgs := []string{"docker-build", fmt.Sprintf("IMG=%s", projectImage)}
+	makeArgs := []string{"docker-build", fmt.Sprintf("CONTROLLER_IMG=%s", utils.ControllerImage)}
 	if dockerBuildArgs != "" {
 		makeArgs = append(makeArgs, fmt.Sprintf("DOCKER_BUILD_ARGS=%s", dockerBuildArgs))
 	}
@@ -61,7 +48,7 @@ var _ = BeforeSuite(func() {
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 
 	By("building the task-executor image")
-	makeArgs = []string{"docker-build-task-executor", fmt.Sprintf("TASK_EXECUTOR_IMG=%s", taskExecutorImage)}
+	makeArgs = []string{"docker-build-task-executor", fmt.Sprintf("TASK_EXECUTOR_IMG=%s", utils.TaskExecutorImage)}
 	if dockerBuildArgs != "" {
 		makeArgs = append(makeArgs, fmt.Sprintf("DOCKER_BUILD_ARGS=%s", dockerBuildArgs))
 	}
@@ -72,11 +59,11 @@ var _ = BeforeSuite(func() {
 	// If you want to change the e2e test vendor from Kind, ensure the image is
 	// built and available before running the tests. Also, remove the following block.
 	By("loading the manager(Operator) image on Kind")
-	err = utils.LoadImageToKindClusterWithName(projectImage)
+	err = utils.LoadImageToKindClusterWithName(utils.ControllerImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
 
 	By("loading the task-executor image on Kind")
-	err = utils.LoadImageToKindClusterWithName(taskExecutorImage)
+	err = utils.LoadImageToKindClusterWithName(utils.TaskExecutorImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the task-executor image into Kind")
 })
 

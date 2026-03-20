@@ -14,12 +14,26 @@
 
 """Shared constants for sandbox services."""
 
+RESERVED_LABEL_PREFIX = "opensandbox.io/"
+
 SANDBOX_ID_LABEL = "opensandbox.io/id"
 SANDBOX_EXPIRES_AT_LABEL = "opensandbox.io/expires-at"
+SANDBOX_MANUAL_CLEANUP_LABEL = "opensandbox.io/manual-cleanup"
 # Host-mapped ports recorded on containers (bridge mode).
 SANDBOX_EMBEDDING_PROXY_PORT_LABEL = "opensandbox.io/embedding-proxy-port"  # maps container 44772 -> host port
 SANDBOX_HTTP_PORT_LABEL = "opensandbox.io/http-port"  # maps container 8080 -> host port
+SANDBOX_OSSFS_MOUNTS_LABEL = "opensandbox.io/ossfs-mounts"
 OPEN_SANDBOX_INGRESS_HEADER = "OpenSandbox-Ingress-To"
+OPEN_SANDBOX_EGRESS_AUTH_HEADER = "OPENSANDBOX-EGRESS-AUTH"
+SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY = "opensandbox.io/egress-auth-token"
+
+# Environment variable name for passing network policy to egress sidecar
+EGRESS_RULES_ENV = "OPENSANDBOX_EGRESS_RULES"
+# Must match components/egress/pkg/constants/configuration.go EnvEgressMode
+EGRESS_MODE_ENV = "OPENSANDBOX_EGRESS_MODE"
+# Must match components/egress/pkg/constants/configuration.go EnvEgressToken
+OPENSANDBOX_EGRESS_TOKEN = "OPENSANDBOX_EGRESS_TOKEN"
+
 
 class SandboxErrorCodes:
     """Canonical error codes for sandbox service operations."""
@@ -73,13 +87,30 @@ class SandboxErrorCodes:
     PVC_VOLUME_NOT_FOUND = "VOLUME::PVC_NOT_FOUND"
     PVC_VOLUME_INSPECT_FAILED = "VOLUME::PVC_INSPECT_FAILED"
     PVC_SUBPATH_UNSUPPORTED_DRIVER = "VOLUME::PVC_SUBPATH_UNSUPPORTED_DRIVER"
+    INVALID_OSSFS_VERSION = "VOLUME::INVALID_OSSFS_VERSION"
+    INVALID_OSSFS_ENDPOINT = "VOLUME::INVALID_OSSFS_ENDPOINT"
+    INVALID_OSSFS_BUCKET = "VOLUME::INVALID_OSSFS_BUCKET"
+    INVALID_OSSFS_OPTION = "VOLUME::INVALID_OSSFS_OPTION"
+    INVALID_OSSFS_CREDENTIALS = "VOLUME::INVALID_OSSFS_CREDENTIALS"
+    INVALID_OSSFS_MOUNT_ROOT = "VOLUME::INVALID_OSSFS_MOUNT_ROOT"
+    OSSFS_PATH_NOT_FOUND = "VOLUME::OSSFS_PATH_NOT_FOUND"
+    OSSFS_MOUNT_FAILED = "VOLUME::OSSFS_MOUNT_FAILED"
+    OSSFS_UNMOUNT_FAILED = "VOLUME::OSSFS_UNMOUNT_FAILED"
 
 
 __all__ = [
+    "RESERVED_LABEL_PREFIX",
     "SANDBOX_ID_LABEL",
     "SANDBOX_EXPIRES_AT_LABEL",
+    "SANDBOX_MANUAL_CLEANUP_LABEL",
     "SANDBOX_EMBEDDING_PROXY_PORT_LABEL",
     "SANDBOX_HTTP_PORT_LABEL",
+    "SANDBOX_OSSFS_MOUNTS_LABEL",
     "OPEN_SANDBOX_INGRESS_HEADER",
+    "OPEN_SANDBOX_EGRESS_AUTH_HEADER",
+    "SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY",
+    "EGRESS_RULES_ENV",
+    "EGRESS_MODE_ENV",
+    "OPENSANDBOX_EGRESS_TOKEN",
     "SandboxErrorCodes",
 ]

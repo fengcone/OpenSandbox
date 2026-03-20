@@ -33,7 +33,10 @@ from opensandbox.adapters.converter.filesystem_model_converter import (
 from opensandbox.adapters.converter.metrics_model_converter import (
     MetricsModelConverter,
 )
-from opensandbox.adapters.converter.response_handler import handle_api_error
+from opensandbox.adapters.converter.response_handler import (
+    handle_api_error,
+    require_parsed,
+)
 from opensandbox.adapters.converter.sandbox_model_converter import (
     SandboxModelConverter,
 )
@@ -76,10 +79,12 @@ def test_handle_api_error_raises_with_parsed_message() -> None:
     class Resp:
         status_code = 400
         parsed = Parsed()
+        headers = {"X-Request-ID": "req-123"}
 
     with pytest.raises(SandboxApiException) as ei:
         handle_api_error(Resp(), "Op")
     assert "bad request" in str(ei.value)
+    assert ei.value.request_id == "req-123"
 
 
 def test_handle_api_error_noop_on_success() -> None:
@@ -88,6 +93,17 @@ def test_handle_api_error_noop_on_success() -> None:
         parsed = None
 
     handle_api_error(Resp(), "Op")
+
+
+def test_require_parsed_includes_request_id_on_invalid_payload() -> None:
+    class Resp:
+        status_code = 200
+        parsed = None
+        headers = {"x-request-id": "req-456"}
+
+    with pytest.raises(SandboxApiException) as ei:
+        require_parsed(Resp(), expected_type=str, operation_name="Op")
+    assert ei.value.request_id == "req-456"
 
 
 def test_exception_converter_maps_common_types() -> None:
@@ -160,6 +176,25 @@ def test_execution_converter_to_api_run_command_request() -> None:
         ).to_dict()
     )
 
+    api4 = ExecutionConverter.to_api_run_command_request(
+        "id",
+        RunCommandOpts(
+            uid=1000,
+            gid=1000,
+            envs={"APP_ENV": "test", "LOG_LEVEL": "debug"},
+        ),
+    )
+    d4 = api4.to_dict()
+    assert d4["uid"] == 1000
+    assert d4["gid"] == 1000
+    assert d4["envs"] == {"APP_ENV": "test", "LOG_LEVEL": "debug"}
+    assert "cwd" not in d4
+
+
+def test_run_command_opts_validates_gid_requires_uid() -> None:
+    with pytest.raises(ValueError, match="uid is required when gid is provided"):
+        RunCommandOpts(gid=1000)
+
 
 def test_filesystem_and_metrics_converters() -> None:
     from datetime import datetime, timezone
@@ -217,3 +252,20 @@ def test_sandbox_model_converter_to_api_create_request_and_renew_tz() -> None:
 
     renew = SandboxModelConverter.to_api_renew_request(datetime(2025, 1, 1))
     assert renew.expires_at.tzinfo is timezone.utc
+
+
+def test_sandbox_model_converter_omits_timeout_for_manual_cleanup() -> None:
+    req = SandboxModelConverter.to_api_create_sandbox_request(
+        spec=SandboxImageSpec("python:3.11"),
+        entrypoint=["/bin/sh"],
+        env={},
+        metadata={},
+        timeout=None,
+        resource={"cpu": "100m"},
+        network_policy=None,
+        extensions={},
+        volumes=None,
+    )
+
+    dumped = req.to_dict()
+    assert "timeout" not in dumped

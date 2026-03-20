@@ -29,12 +29,13 @@ export function getSandboxImage(): string {
   return TEST_IMAGE;
 }
 
-export function createConnectionConfig(): ConnectionConfig {
+export function createConnectionConfig(useServerProxy = false): ConnectionConfig {
   return new ConnectionConfig({
     domain: TEST_DOMAIN,
     protocol: TEST_PROTOCOL === "https" ? "https" : "http",
     apiKey: TEST_API_KEY,
-    requestTimeoutSeconds: 180
+    requestTimeoutSeconds: 180,
+    useServerProxy
   });
 }
 

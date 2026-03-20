@@ -23,6 +23,7 @@ This converter is designed to work with openapi-python-client generated models,
 which use attrs for model definitions.
 """
 from datetime import datetime, timedelta, timezone
+from typing import Literal, cast
 
 from opensandbox.api.lifecycle.models import (
     CreateSandboxResponse,
@@ -42,6 +43,7 @@ from opensandbox.api.lifecycle.models.create_sandbox_request import CreateSandbo
 from opensandbox.api.lifecycle.models.image_spec import ImageSpec
 from opensandbox.models.sandboxes import (
     NetworkPolicy,
+    NetworkRule,
     PagedSandboxInfos,
     PaginationInfo,
     SandboxCreateResponse,
@@ -90,6 +92,10 @@ class SandboxModelConverter:
         from opensandbox.api.lifecycle.models.host import (
             Host as ApiHost,
         )
+        from opensandbox.api.lifecycle.models.ossfs import (
+            OSSFS as ApiOSSFS,
+        )
+        from opensandbox.api.lifecycle.models.ossfs_version import OSSFSVersion
         from opensandbox.api.lifecycle.models.pvc import (
             PVC as ApiPVC,
         )
@@ -104,6 +110,17 @@ class SandboxModelConverter:
         if volume.pvc is not None:
             api_pvc = ApiPVC(claim_name=volume.pvc.claim_name)
 
+        api_ossfs = UNSET
+        if volume.ossfs is not None and volume.ossfs.access_key_id is not None and volume.ossfs.access_key_secret is not None:
+            api_ossfs = ApiOSSFS(
+                bucket=volume.ossfs.bucket,
+                endpoint=volume.ossfs.endpoint,
+                access_key_id=volume.ossfs.access_key_id,
+                access_key_secret=volume.ossfs.access_key_secret,
+                version=OSSFSVersion(volume.ossfs.version),
+                options=volume.ossfs.options if volume.ossfs.options is not None else UNSET,
+            )
+
         api_sub_path = UNSET
         if volume.sub_path is not None:
             api_sub_path = volume.sub_path
@@ -114,6 +131,7 @@ class SandboxModelConverter:
             read_only=volume.read_only,
             host=api_host,
             pvc=api_pvc,
+            ossfs=api_ossfs,
             sub_path=api_sub_path,
         )
 
@@ -123,7 +141,7 @@ class SandboxModelConverter:
         entrypoint: list[str],
         env: dict[str, str],
         metadata: dict[str, str],
-        timeout: timedelta,
+        timeout: timedelta | None,
         resource: dict[str, str],
         network_policy: NetworkPolicy | None,
         extensions: dict[str, str],
@@ -209,17 +227,19 @@ class SandboxModelConverter:
                 SandboxModelConverter.to_api_volume(v) for v in volumes
             ]
 
-        return CreateSandboxRequest(
+        request = CreateSandboxRequest(
             image=SandboxModelConverter.to_api_image_spec(spec),
             entrypoint=entrypoint,
             env=api_env,
             metadata=api_metadata,
-            timeout=int(timeout.total_seconds()),
             resource_limits=api_resource_limits,
             network_policy=api_network_policy,
             extensions=api_extensions,
             volumes=api_volumes,
         )
+        if timeout is not None:
+            request.timeout = int(timeout.total_seconds())
+        return request
 
     @staticmethod
     def to_api_renew_request(
@@ -237,6 +257,56 @@ class SandboxModelConverter:
 
         return RenewSandboxExpirationRequest(
             expires_at=new_expiration_time,
+        )
+
+    @staticmethod
+    def to_api_network_rules(rules: list[NetworkRule]):
+        """Convert domain NetworkRule list to API NetworkRule list."""
+        from opensandbox.api.lifecycle.models.network_rule import (
+            NetworkRule as ApiNetworkRule,
+        )
+        from opensandbox.api.lifecycle.models.network_rule_action import (
+            NetworkRuleAction,
+        )
+
+        return [
+            ApiNetworkRule(
+                action=NetworkRuleAction(rule.action),
+                target=rule.target,
+            )
+            for rule in rules
+        ]
+
+    @staticmethod
+    def to_sandbox_network_policy(api_policy):
+        """Convert API NetworkPolicy to domain NetworkPolicy."""
+        from opensandbox.api.lifecycle.models.network_policy import (
+            NetworkPolicy as ApiNetworkPolicy,
+        )
+        from opensandbox.api.lifecycle.types import Unset
+
+        if not isinstance(api_policy, ApiNetworkPolicy):
+            raise TypeError(f"Expected NetworkPolicy, got {type(api_policy).__name__}")
+
+        default_action: str | None = "deny"
+        if not isinstance(api_policy.default_action, Unset):
+            default_action = str(api_policy.default_action.value)
+
+        egress: list[NetworkRule] | None = None
+        if not isinstance(api_policy.egress, Unset):
+            egress = [
+                NetworkRule(
+                    action=cast(Literal["allow", "deny"], rule.action.value),
+                    target=rule.target,
+                )
+                for rule in api_policy.egress
+            ]
+
+        return NetworkPolicy.model_validate(
+            {
+                "defaultAction": default_action,
+                "egress": egress,
+            }
         )
 
     @staticmethod
@@ -306,12 +376,16 @@ class SandboxModelConverter:
             elif isinstance(metadata_obj, dict):
                 metadata = metadata_obj
 
+        expires_at = api_sandbox.expires_at
+        if isinstance(expires_at, Unset):
+            expires_at = None
+
         return SandboxInfo(
             id=api_sandbox.id,
             status=SandboxModelConverter._convert_sandbox_status(api_sandbox.status),
             image=domain_image_spec,
             created_at=api_sandbox.created_at,
-            expires_at=api_sandbox.expires_at,
+            expires_at=expires_at,
             entrypoint=api_sandbox.entrypoint,
             metadata=metadata,
         )

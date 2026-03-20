@@ -36,7 +36,14 @@ controller:
   
   # -- Log level for zap logger (debug, info, error)
   logLevel: info
-  
+
+  # -- Kubernetes client rate limiter configuration
+  kubeClient:
+    # -- QPS for Kubernetes client rate limiter.
+    qps: 100
+    # -- Burst for Kubernetes client rate limiter.
+    burst: 200
+
   # -- Enable leader election for controller manager
   leaderElection:
     enabled: true

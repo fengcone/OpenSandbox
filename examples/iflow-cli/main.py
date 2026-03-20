@@ -45,7 +45,7 @@ async def main() -> None:
     iflow_model_name = os.getenv("IFLOW_MODEL_NAME", "qwen3-coder-plus")
     image = os.getenv(
         "SANDBOX_IMAGE",
-        "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.1",
+        "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2",
     )
 
     config = ConnectionConfig(

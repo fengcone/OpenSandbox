@@ -2,7 +2,7 @@
 
 中文 | [English](README.md)
 
-本目录包含 OpenSandbox 项目的 OpenAPI 规范文档，定义了完整的 API 接口和数据模型。发起请求时请使用各规范中定义的服务器地址（例如生命周期 API 的 `http://localhost:8080/v1`，execd 的 `http://localhost:8080`）。
+本目录包含 OpenSandbox 项目的 OpenAPI 规范文档，定义了完整的 API 接口和数据模型。发起请求时请使用各规范中定义的服务器地址（例如生命周期 API 的 `http://localhost:8080/v1`，execd 的 `http://localhost:44772`，egress 的 `http://localhost:18080`）。
 
 ## 规范文件
 
@@ -85,6 +85,23 @@
 **系统指标：**
 - `GET /metrics` - 获取系统资源指标
 - `GET /metrics/watch` - 实时监控系统指标（SSE 流）
+
+### 3. egress-api.yaml
+
+**沙箱 Egress 运行时 API**
+
+定义了由沙箱内 egress sidecar 直接暴露的运行时策略接口。与生命周期 API 不同，
+该 API 需要先解析沙箱 egress 端口对应的 endpoint，再直接访问 sidecar。
+
+**核心功能：**
+- **策略查询**：获取当前生效的 egress 策略及其运行时模式
+- **策略变更**：使用 sidecar 的 merge 语义在运行时 patch egress 规则
+- **直连 Sidecar**：不再通过生命周期 API 做服务端转发
+- **可选鉴权**：当 egress sidecar 需要鉴权时，支持携带 endpoint 返回的请求头
+
+**主要端点：**
+- `GET /policy` - 获取当前 egress 策略
+- `PATCH /policy` - 将新的 egress 规则合并到当前策略
 
 ## 技术特性
 

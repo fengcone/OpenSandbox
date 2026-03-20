@@ -71,6 +71,8 @@ kubectl delete crd pools.sandbox.opensandbox.io
 | `controller.resources.requests.cpu` | CPU resource requests | `10m` |
 | `controller.resources.requests.memory` | Memory resource requests | `64Mi` |
 | `controller.logLevel` | Can be one of 'debug', 'info', 'error' | `info` |
+| `controller.kubeClient.qps` | QPS for Kubernetes client rate limiter | `100` |
+| `controller.kubeClient.burst` | Burst for Kubernetes client rate limiter | `200` |
 | `controller.leaderElection.enabled` | Enable leader election | `true` |
 | `controller.nodeSelector` | Node labels for pod assignment | `{}` |
 | `controller.tolerations` | Tolerations for pod assignment | `[]` |
@@ -121,6 +123,19 @@ controller:
       cpu: 100m
       memory: 128Mi
 ```
+
+### Custom Kubernetes Client Rate Limiter
+
+Configure the QPS and Burst for the Kubernetes client to handle high-throughput scenarios:
+
+```yaml
+controller:
+  kubeClient:
+    qps: 100
+    burst: 250
+```
+
+> Note: Default values are QPS=100, Burst=200.
 
 ### Use Private Registry
 

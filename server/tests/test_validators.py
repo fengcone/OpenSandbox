@@ -15,10 +15,11 @@
 import pytest
 from fastapi import HTTPException
 
-from src.api.schema import Host, PVC, Volume
+from src.api.schema import Host, OSSFS, PVC, Volume
 from src.services.constants import SandboxErrorCodes
 from src.services.validators import (
     ensure_metadata_labels,
+    ensure_timeout_within_limit,
     ensure_valid_host_path,
     ensure_valid_mount_path,
     ensure_valid_pvc_name,
@@ -32,7 +33,6 @@ def test_ensure_metadata_labels_accepts_common_k8s_forms():
     # Various valid label shapes: with/without prefix, mixed chars, empty value allowed.
     valid_metadata = {
         "app": "web",
-        "opensandbox.io/hello": "world",
         "k8s.io/name": "app-1",
         "example.com/label": "a.b_c-1",
         "team": "A1_b-2.c",
@@ -111,6 +111,57 @@ def test_ensure_metadata_labels_rejects_key_with_empty_prefix():
         ensure_metadata_labels({"/name": "value"})
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_METADATA_LABEL
+
+
+def test_ensure_metadata_labels_rejects_reserved_prefix():
+    """User metadata must not use the opensandbox.io/ reserved prefix."""
+    with pytest.raises(HTTPException) as exc_info:
+        ensure_metadata_labels({"opensandbox.io/expires-at": "2030-01-01T00:00:00Z"})
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_METADATA_LABEL
+    assert "reserved prefix" in exc_info.value.detail["message"]
+
+
+def test_ensure_metadata_labels_rejects_manual_cleanup_key():
+    """User must not inject the manual-cleanup lifecycle label."""
+    with pytest.raises(HTTPException) as exc_info:
+        ensure_metadata_labels({"opensandbox.io/manual-cleanup": "true"})
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_METADATA_LABEL
+    assert "reserved prefix" in exc_info.value.detail["message"]
+
+
+def test_ensure_metadata_labels_rejects_arbitrary_reserved_key():
+    """Any key under opensandbox.io/ should be rejected, not just known labels."""
+    with pytest.raises(HTTPException) as exc_info:
+        ensure_metadata_labels({"opensandbox.io/custom": "value"})
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_METADATA_LABEL
+
+
+def test_ensure_timeout_within_limit_allows_equal_boundary():
+    ensure_timeout_within_limit(3600, 3600)
+
+
+def test_ensure_timeout_within_limit_allows_disabled_upper_bound():
+    ensure_timeout_within_limit(7200, None)
+
+
+def test_ensure_timeout_within_limit_rejects_timeout_above_limit():
+    with pytest.raises(HTTPException) as exc_info:
+        ensure_timeout_within_limit(3601, 3600)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_PARAMETER
+
+
+def test_ensure_timeout_within_limit_rejects_unrepresentable_timeout():
+    with pytest.raises(HTTPException) as exc_info:
+        ensure_timeout_within_limit(10**20, None)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_PARAMETER
+    assert "too large" in exc_info.value.detail["message"]
 
 
 # ============================================================================
@@ -412,6 +463,22 @@ class TestEnsureVolumesValid:
         )
         ensure_volumes_valid([volume])
 
+    def test_valid_ossfs_volume(self):
+        """Valid OSSFS volume should pass validation."""
+        volume = Volume(
+            name="oss-data",
+            ossfs=OSSFS(
+                bucket="bucket-test-3",
+                endpoint="oss-cn-hangzhou.aliyuncs.com",
+                    access_key_id="AKIDEXAMPLE",
+                access_key_secret="SECRETEXAMPLE",
+            ),
+            mount_path="/mnt/data",
+            read_only=False,
+            sub_path="task-001",
+        )
+        ensure_volumes_valid([volume])
+
     def test_valid_volume_with_subpath(self):
         """Valid volume with subPath should pass validation."""
         volume = Volume(
@@ -516,6 +583,75 @@ class TestEnsureVolumesValid:
             ensure_volumes_valid([volume], allowed_host_prefixes=["/data/opensandbox"])
         assert exc_info.value.status_code == 400
         assert exc_info.value.detail["code"] == SandboxErrorCodes.HOST_PATH_NOT_ALLOWED
+
+    def test_ossfs_invalid_version_rejected_by_schema(self):
+        """Unsupported OSSFS version should be rejected by schema validation."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            OSSFS(
+                bucket="bucket-test-3",
+                endpoint="oss-cn-hangzhou.aliyuncs.com",
+                version="3.0",  # type: ignore[arg-type]
+                access_key_id="AKIDEXAMPLE",
+                access_key_secret="SECRETEXAMPLE",
+            )
+
+    def test_ossfs_missing_inline_credentials_raises(self):
+        """Missing inline credentials should raise HTTPException."""
+        volume = Volume(
+            name="oss-data",
+            ossfs=OSSFS(
+                bucket="bucket-test-3",
+                endpoint="oss-cn-hangzhou.aliyuncs.com",
+                access_key_id="AKIDEXAMPLE",
+                access_key_secret="SECRETEXAMPLE",
+            ),
+            mount_path="/mnt/data",
+        )
+        volume.ossfs.access_key_id = None
+        with pytest.raises(HTTPException) as exc_info:
+            ensure_volumes_valid([volume])
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_OSSFS_CREDENTIALS
+
+    def test_ossfs_v1_options_reject_prefixed_entries(self):
+        """OSSFS options should reject prefixed entries for 1.0."""
+        volume = Volume(
+            name="oss-data",
+            ossfs=OSSFS(
+                bucket="bucket-test-3",
+                endpoint="oss-cn-hangzhou.aliyuncs.com",
+                version="1.0",
+                options=["--allow_other"],
+                access_key_id="AKIDEXAMPLE",
+                access_key_secret="SECRETEXAMPLE",
+            ),
+            mount_path="/mnt/data",
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            ensure_volumes_valid([volume])
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_OSSFS_OPTION
+
+    def test_ossfs_v2_options_reject_prefixed_entries(self):
+        """OSSFS options should reject prefixed entries for 2.0."""
+        volume = Volume(
+            name="oss-data",
+            ossfs=OSSFS(
+                bucket="bucket-test-3",
+                endpoint="oss-cn-hangzhou.aliyuncs.com",
+                version="2.0",
+                options=["-o allow_other"],
+                access_key_id="AKIDEXAMPLE",
+                access_key_secret="SECRETEXAMPLE",
+            ),
+            mount_path="/mnt/data",
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            ensure_volumes_valid([volume])
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_OSSFS_OPTION
 
     def test_invalid_pvc_name_rejected_by_pydantic(self):
         """Invalid PVC name should be rejected by Pydantic pattern validation."""

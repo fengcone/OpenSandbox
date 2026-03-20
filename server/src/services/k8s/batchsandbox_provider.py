@@ -29,7 +29,7 @@ from kubernetes.client import (
     V1VolumeMount,
 )
 
-from src.config import AppConfig, INGRESS_MODE_GATEWAY
+from src.config import AppConfig, EGRESS_MODE_DNS, INGRESS_MODE_GATEWAY
 from src.services.helpers import format_ingress_endpoint
 from src.api.schema import Endpoint, ImageSpec, NetworkPolicy, Volume
 from src.services.k8s.image_pull_secret_helper import (
@@ -41,6 +41,9 @@ from src.services.k8s.client import K8sClient
 from src.services.k8s.egress_helper import (
     apply_egress_to_spec,
     build_security_context_for_sandbox_container,
+    prep_execd_init_for_egress,
+)
+from src.services.k8s.security_context import (
     build_security_context_from_dict,
     serialize_security_context_to_dict,
 )
@@ -107,12 +110,15 @@ class BatchSandboxProvider(WorkloadProvider):
         env: Dict[str, str],
         resource_limits: Dict[str, str],
         labels: Dict[str, str],
-        expires_at: datetime,
+        expires_at: Optional[datetime],
         execd_image: str,
         extensions: Optional[Dict[str, str]] = None,
         network_policy: Optional[NetworkPolicy] = None,
         egress_image: Optional[str] = None,
         volumes: Optional[List[Volume]] = None,
+        annotations: Optional[Dict[str, str]] = None,
+        egress_auth_token: Optional[str] = None,
+        egress_mode: str = EGRESS_MODE_DNS,
     ) -> Dict[str, Any]:
         """
         Create a BatchSandbox workload.
@@ -178,7 +184,10 @@ class BatchSandboxProvider(WorkloadProvider):
         extra_volumes, extra_mounts = self._extract_template_pod_extras()
 
         # Build init container for execd installation
-        init_container = self._build_execd_init_container(execd_image)
+        disable_ipv6_for_egress = network_policy is not None and egress_image is not None
+        init_container = self._build_execd_init_container(
+            execd_image, disable_ipv6_for_egress=disable_ipv6_for_egress
+        )
         
         # Build main container with execd support
         main_container = self._build_main_container(
@@ -216,18 +225,23 @@ class BatchSandboxProvider(WorkloadProvider):
 
         # Add egress sidecar if network policy is provided
         apply_egress_to_spec(
-            pod_spec=pod_spec,
             containers=containers,
             network_policy=network_policy,
             egress_image=egress_image,
+            egress_auth_token=egress_auth_token,
+            egress_mode=egress_mode,
         )
 
         # Add user-specified volumes if provided
         if volumes:
             apply_volumes_to_pod_spec(pod_spec, volumes)
 
-        # Build runtime-generated BatchSandbox manifest
-        # This contains only the essential runtime fields
+        spec: Dict[str, Any] = {
+            "replicas": 1,
+            "template": {
+                "spec": pod_spec,
+            },
+        }
         runtime_manifest = {
             "apiVersion": f"{self.group}/{self.version}",
             "kind": "BatchSandbox",
@@ -236,17 +250,18 @@ class BatchSandboxProvider(WorkloadProvider):
                 "namespace": namespace,
                 "labels": labels,
             },
-            "spec": {
-                "replicas": 1,
-                "expireTime": expires_at.isoformat(),
-                "template": {
-                    "spec": pod_spec,
-                },
-            },
+            "spec": spec,
         }
+        if annotations:
+            runtime_manifest["metadata"]["annotations"] = annotations
         
         # Merge with template to get final manifest
         batchsandbox = self.template_manager.merge_with_runtime_values(runtime_manifest)
+        # Set or strip expireTime after merge so we override any template value
+        if expires_at is None:
+            batchsandbox["spec"].pop("expireTime", None)
+        else:
+            batchsandbox["spec"]["expireTime"] = expires_at.isoformat()
         self._merge_pod_spec_extras(batchsandbox, extra_volumes, extra_mounts)
         
         # Create BatchSandbox
@@ -297,7 +312,7 @@ class BatchSandboxProvider(WorkloadProvider):
         namespace: str,
         labels: Dict[str, str],
         pool_ref: str,
-        expires_at: datetime,
+        expires_at: Optional[datetime],
         entrypoint: List[str],
         env: Dict[str, str],
     ) -> Dict[str, Any]:
@@ -323,6 +338,13 @@ class BatchSandboxProvider(WorkloadProvider):
         Raises:
             SandboxError: If required parameters are invalid
         """
+        spec: Dict[str, Any] = {
+            "replicas": 1,
+            "poolRef": pool_ref,
+            "taskTemplate": self._build_task_template(entrypoint, env),
+        }
+        if expires_at is not None:
+            spec["expireTime"] = expires_at.isoformat()
         runtime_manifest = {
             "apiVersion": f"{self.group}/{self.version}",
             "kind": "BatchSandbox",
@@ -331,12 +353,7 @@ class BatchSandboxProvider(WorkloadProvider):
                 "namespace": namespace,
                 "labels": labels,
             },
-            "spec": {
-                "replicas": 1,
-                "poolRef": pool_ref,
-                "expireTime": expires_at.isoformat(),
-                "taskTemplate": self._build_task_template(entrypoint, env),
-            },
+            "spec": spec,
         }
         
         # Pool-based creation does not need template merging
@@ -478,7 +495,12 @@ class BatchSandboxProvider(WorkloadProvider):
             }
         }
     
-    def _build_execd_init_container(self, execd_image: str) -> V1Container:
+    def _build_execd_init_container(
+        self,
+        execd_image: str,
+        *,
+        disable_ipv6_for_egress: bool = False,
+    ) -> V1Container:
         """
         Build init container for execd installation.
         
@@ -491,6 +513,8 @@ class BatchSandboxProvider(WorkloadProvider):
         
         Args:
             execd_image: execd container image
+            disable_ipv6_for_egress: When True, disable IPv6 in the Pod netns first
+                (privileged) then install binaries; used with egress sidecar.
             
         Returns:
             V1Container: Init container spec
@@ -502,6 +526,10 @@ class BatchSandboxProvider(WorkloadProvider):
             "chmod +x /opt/opensandbox/bin/execd && "
             "chmod +x /opt/opensandbox/bin/bootstrap.sh"
         )
+        security_context = None
+        if disable_ipv6_for_egress:
+            script, sc_dict = prep_execd_init_for_egress(script)
+            security_context = build_security_context_from_dict(sc_dict)
 
         resources = None
         if self.execd_init_resources:
@@ -522,6 +550,7 @@ class BatchSandboxProvider(WorkloadProvider):
                 )
             ],
             resources=resources,
+            security_context=security_context,
         )
     
     def _build_main_container(
@@ -734,7 +763,7 @@ class BatchSandboxProvider(WorkloadProvider):
         except (ValueError, TypeError) as e:
             logger.warning("Invalid expireTime format: %s, error: %s", expire_time_str, e)
             return None
-    
+
     def _parse_pod_ip(self, workload: Dict[str, Any]) -> Optional[str]:
         """Parse the first Pod IP from the endpoints annotation.
 

@@ -468,11 +468,8 @@ export interface components {
             metadata?: {
                 [key: string]: string;
             };
-            /**
-             * Format: date-time
-             * @description Timestamp when sandbox will auto-terminate
-             */
-            expiresAt: string;
+            /** @description Timestamp when sandbox will auto-terminate. Null when manual cleanup is enabled. */
+            expiresAt?: string | null;
             /**
              * Format: date-time
              * @description Sandbox creation timestamp
@@ -501,11 +498,8 @@ export interface components {
              *     Always present in responses since entrypoint is required in creation requests.
              */
             entrypoint: string[];
-            /**
-             * Format: date-time
-             * @description Timestamp when sandbox will auto-terminate
-             */
-            expiresAt: string;
+            /** @description Timestamp when sandbox will auto-terminate. Null when manual cleanup is enabled. */
+            expiresAt?: string | null;
             /**
              * Format: date-time
              * @description Sandbox creation timestamp
@@ -588,9 +582,12 @@ export interface components {
             image: components["schemas"]["ImageSpec"];
             /**
              * @description Sandbox timeout in seconds. The sandbox will automatically terminate after this duration.
-             *     SDK clients should provide a default value (e.g., 3600 seconds / 1 hour).
+             *     The maximum is controlled by the server configuration (`server.max_sandbox_timeout_seconds`).
+             *     Omit or set null to disable automatic expiration and require explicit cleanup.
+             *     Note: manual cleanup support is runtime-dependent; Kubernetes providers may reject
+             *     null timeout when the underlying workload provider does not support non-expiring sandboxes.
              */
-            timeout: number;
+            timeout?: number | null;
             /**
              * @description Runtime resource constraints for the sandbox instance.
              *     SDK clients should provide sensible defaults (e.g., cpu: "500m", memory: "512Mi").
@@ -758,7 +755,7 @@ export interface components {
         /**
          * @description Storage mount definition for a sandbox. Each volume entry contains:
          *     - A unique name identifier
-         *     - Exactly one backend struct (host, pvc, etc.) with backend-specific fields
+         *     - Exactly one backend struct (host, pvc, ossfs, etc.) with backend-specific fields
          *     - Common mount settings (mountPath, readOnly, subPath)
          */
         Volume: {
@@ -769,6 +766,7 @@ export interface components {
             name: string;
             host?: components["schemas"]["Host"];
             pvc?: components["schemas"]["PVC"];
+            ossfs?: components["schemas"]["OSSFS"];
             /**
              * @description Absolute path inside the container where the volume is mounted.
              *     Must start with '/'.
@@ -781,6 +779,7 @@ export interface components {
             readOnly: boolean;
             /**
              * @description Optional subdirectory under the backend path to mount.
+             *     For `ossfs` backend, this field is used as the bucket prefix.
              *     Must be a relative path without '..' components.
              */
             subPath?: string;
@@ -800,17 +799,54 @@ export interface components {
             path: string;
         };
         /**
-         * @description Kubernetes PersistentVolumeClaim mount backend. References an existing
-         *     PVC in the same namespace as the sandbox pod.
+         * @description Platform-managed named volume backend. A runtime-neutral abstraction
+         *     for referencing a pre-existing, platform-managed named volume.
          *
-         *     Only available in Kubernetes runtime.
+         *     - Kubernetes: maps to a PersistentVolumeClaim in the same namespace.
+         *     - Docker: maps to a Docker named volume (created via `docker volume create`).
+         *
+         *     The volume must already exist on the target platform before sandbox
+         *     creation.
          */
         PVC: {
             /**
-             * @description Name of the PersistentVolumeClaim in the same namespace.
-             *     Must be a valid Kubernetes resource name.
+             * @description Name of the volume on the target platform.
+             *     In Kubernetes this is the PVC name; in Docker this is the named
+             *     volume name. Must be a valid DNS label.
              */
             claimName: string;
+        };
+        /**
+         * @description Alibaba Cloud OSS mount backend via ossfs.
+         *
+         *     The runtime mounts a host-side OSS path under `storage.ossfs_mount_root`
+         *     and bind-mounts the resolved path into the sandbox container.
+         *     Prefix selection is expressed via `Volume.subPath`.
+         *     In Docker runtime, OSSFS backend requires OpenSandbox Server to run on a Linux host with FUSE support.
+         */
+        OSSFS: {
+            /** @description OSS bucket name. */
+            bucket: string;
+            /** @description OSS endpoint (e.g., `oss-cn-hangzhou.aliyuncs.com`). */
+            endpoint: string;
+            /**
+             * @description ossfs major version used by runtime mount integration.
+             * @default 2.0
+             * @enum {string}
+             */
+            version: "1.0" | "2.0";
+            /**
+             * @description Additional ossfs mount options.
+             *     Runtime encodes options by `version`:
+             *     - `1.0`: mounts with `ossfs ... -o <option>`
+             *     - `2.0`: mounts with `ossfs2 mount ... -c <config-file>` and encodes options as `--<option>` lines in the config file
+             *     Option values must be provided as raw payloads without leading `-`.
+             */
+            options?: string[];
+            /** @description OSS access key ID for inline credentials mode. */
+            accessKeyId: string;
+            /** @description OSS access key secret for inline credentials mode. */
+            accessKeySecret: string;
         };
     };
     responses: {

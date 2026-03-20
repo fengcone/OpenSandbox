@@ -48,7 +48,7 @@ HOP_BY_HOP_HEADERS = {
     "proxy-authenticate",
     "proxy-authorization",
     "te",
-    "trailers",
+    "trailer",
     "transfer-encoding",
     "upgrade",
 }
@@ -73,7 +73,6 @@ sandbox_service = create_sandbox_service()
 @router.post(
     "/sandboxes",
     response_model=CreateSandboxResponse,
-    response_model_exclude_none=True,
     status_code=status.HTTP_202_ACCEPTED,
     responses={
         202: {"description": "Sandbox creation accepted for asynchronous provisioning"},
@@ -105,14 +104,13 @@ async def create_sandbox(
         HTTPException: If sandbox creation scheduling fails
     """
 
-    return sandbox_service.create_sandbox(request)
+    return await sandbox_service.create_sandbox(request)
 
 
 # Search endpoint
 @router.get(
     "/sandboxes",
     response_model=ListSandboxesResponse,
-    response_model_exclude_none=True,
     responses={
         200: {"description": "Paginated collection of sandboxes"},
         400: {"model": ErrorResponse, "description": "The request was invalid or malformed"},
@@ -176,7 +174,6 @@ async def list_sandboxes(
 @router.get(
     "/sandboxes/{sandbox_id}",
     response_model=Sandbox,
-    response_model_exclude_none=True,
     responses={
         200: {"description": "Sandbox current state and metadata"},
         401: {"model": ErrorResponse, "description": "Authentication credentials are missing or invalid"},
@@ -432,11 +429,6 @@ async def proxy_sandbox_endpoint_request(request: Request, sandbox_id: str, port
 
     target_host = endpoint.endpoint
     query_string = request.url.query
-    target_url = (
-        f"http://{target_host}/{full_path}?{query_string}"
-        if query_string
-        else f"http://{target_host}/{full_path}"
-    )
 
     client: httpx.AsyncClient = request.app.state.http_client
 
@@ -466,9 +458,10 @@ async def proxy_sandbox_endpoint_request(request: Request, sandbox_id: str, port
 
         req = client.build_request(
             method=request.method,
-            url=target_url,
+            url=f"http://{target_host}/{full_path}",
+            params=query_string if query_string else None,
             headers=headers,
-            content=request.stream(),
+            content=request.stream() if request.method in ("POST", "PUT", "PATCH", "DELETE") else None,
         )
 
         resp = await client.send(req, stream=True)

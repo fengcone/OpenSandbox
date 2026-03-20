@@ -28,6 +28,9 @@ object ExecutionConverter {
             background = background,
             cwd = workingDirectory,
             timeout = timeout?.inWholeMilliseconds,
+            uid = uid,
+            gid = gid,
+            envs = envs,
         )
     }
 

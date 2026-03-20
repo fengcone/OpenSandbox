@@ -16,6 +16,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/alibaba/opensandbox/internal/version"
 
@@ -42,5 +43,6 @@ func main() {
 	log.Info("execd listening on %s", addr)
 	if err := engine.Run(addr); err != nil {
 		log.Error("failed to start execd server: %v", err)
+		os.Exit(1)
 	}
 }

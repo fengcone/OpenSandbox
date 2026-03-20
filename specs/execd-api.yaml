@@ -290,7 +290,8 @@ paths:
         The command can run in foreground or background mode. The response includes stdout, stderr,
         execution status, and completion events.
         Optionally specify `timeout` (milliseconds) to enforce a maximum runtime; the server will
-        terminate the process when the timeout is reached.
+        terminate the process when the timeout is reached. You can also pass `uid`/`gid` to run
+        with specific user/group IDs, and `envs` to inject environment variables.
       operationId: runCommand
       tags:
         - Command
@@ -308,6 +309,11 @@ paths:
                   cwd: /workspace
                   background: false
                   timeout: 30000
+                  uid: 1000
+                  gid: 1000
+                  envs:
+                    PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+                    PYTHONUNBUFFERED: "1"
               background:
                 summary: Background command
                 value:
@@ -315,6 +321,10 @@ paths:
                   cwd: /app
                   background: true
                   timeout: 120000
+                  uid: 1000
+                  envs:
+                    APP_ENV: production
+                    LOG_LEVEL: info
       responses:
         "200":
           description: Stream of command execution events
@@ -938,6 +948,28 @@ components:
           format: int64
           description: Maximum allowed execution time in milliseconds before the command is forcefully terminated by the server. If omitted, the server will not enforce any timeout.
           example: 60000
+        uid:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            Unix user ID used to run the command. If `gid` is provided, `uid` is required.
+          example: 1000
+        gid:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            Unix group ID used to run the command. Requires `uid` to be provided.
+          example: 1000
+        envs:
+          type: object
+          description: Environment variables injected into the command process.
+          additionalProperties:
+            type: string
+          example:
+            PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            PYTHONUNBUFFERED: "1"
 
     CommandStatusResponse:
       type: object

@@ -2,7 +2,7 @@
 
 English | [中文](README_zh.md)
 
-This directory contains OpenAPI specification documents for the OpenSandbox project, defining the complete API interfaces and data models. Use the server base URLs defined in each spec (for example, `http://localhost:8080/v1` for the lifecycle API and `http://localhost:8080` for execd) when constructing requests.
+This directory contains OpenAPI specification documents for the OpenSandbox project, defining the complete API interfaces and data models. Use the server base URLs defined in each spec (for example, `http://localhost:8080/v1` for the lifecycle API, `http://localhost:44772` for execd, and `http://localhost:18080` for egress) when constructing requests.
 
 ## Specification Files
 
@@ -85,6 +85,24 @@ Defines interfaces for executing code, commands, and file operations within sand
 **System Metrics:**
 - `GET /metrics` - Get system resource metrics
 - `GET /metrics/watch` - Watch system metrics in real-time (SSE stream)
+
+### 3. egress-api.yaml
+
+**Sandbox Egress Runtime API**
+
+Defines the runtime egress policy interface exposed directly by the egress sidecar
+inside a sandbox. Unlike lifecycle operations, this API is reached by first resolving
+the sandbox endpoint for the egress port and then calling the sidecar endpoint directly.
+
+**Core Features:**
+- **Policy Inspection**: Retrieve the currently enforced egress policy and derived runtime mode
+- **Policy Mutation**: Patch egress rules at runtime using sidecar merge semantics
+- **Direct Sidecar Access**: Access via sandbox endpoint resolution instead of server-side lifecycle forwarding
+- **Optional Sidecar Auth**: Supports endpoint-specific headers when the egress sidecar requires auth
+
+**Main Endpoints:**
+- `GET /policy` - Get the current egress policy
+- `PATCH /policy` - Merge new egress rules into the current policy
 
 ## Technical Features
 

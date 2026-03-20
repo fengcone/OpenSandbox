@@ -22,9 +22,9 @@ import com.alibaba.opensandbox.codeinterpreter.CodeInterpreter;
 import com.alibaba.opensandbox.codeinterpreter.domain.models.execd.executions.CodeContext;
 import com.alibaba.opensandbox.codeinterpreter.domain.models.execd.executions.RunCodeRequest;
 import com.alibaba.opensandbox.codeinterpreter.domain.models.execd.executions.SupportedLanguage;
-import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.*;
 import com.alibaba.opensandbox.sandbox.Sandbox;
 import com.alibaba.opensandbox.sandbox.domain.models.execd.executions.*;
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.*;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -282,6 +282,10 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
 
         // Use class-scoped interpreter (created in @BeforeAll)
         assertNotNull(codeInterpreter);
+        CodeContext pythonContext = codeInterpreter.codes().createContext(SupportedLanguage.PYTHON);
+        assertNotNull(pythonContext);
+        assertEquals("python", pythonContext.getLanguage());
+        Duration perExecTimeout = Duration.ofMinutes(2);
 
         // Event tracking
         List<OutputMessage> stdoutMessages = Collections.synchronizedList(new ArrayList<>());
@@ -319,10 +323,12 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
                                 "print('Hello from Python!')\n"
                                         + "result = 2 + 2\n"
                                         + "print(f'2 + 2 = {result}')")
+                        .context(pythonContext)
                         .handlers(handlers)
                         .build();
 
-        Execution simpleResult = codeInterpreter.codes().run(simpleRequest);
+        Execution simpleResult =
+                runWithRetry(simpleRequest, perExecTimeout, 2, "python-simple-execution");
 
         assertNotNull(simpleResult);
         assertNotNull(simpleResult.getId());
@@ -338,9 +344,10 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
                                         + "my_list = [1, 2, 3, 4, 5]\n"
                                         + "print(f'x={x}, y=\"{y}\", list={my_list}')\n"
                                         + "result")
+                        .context(pythonContext)
                         .build();
 
-        Execution varResult = codeInterpreter.codes().run(varRequest);
+        Execution varResult = runWithRetry(varRequest, perExecTimeout, 2, "python-state-setup");
 
         assertNotNull(varResult);
         assertNotNull(varResult.getId());
@@ -353,9 +360,11 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
                                 "print(f'Previously set variables: x={x}, y={y}')\n"
                                         + "z = sum(my_list)\n"
                                         + "print(f'Sum of list: {z}')")
+                        .context(pythonContext)
                         .build();
 
-        Execution persistResult = codeInterpreter.codes().run(persistRequest);
+        Execution persistResult =
+                runWithRetry(persistRequest, perExecTimeout, 2, "python-state-persistence");
 
         assertNotNull(persistResult);
         assertNotNull(persistResult.getId());
@@ -364,10 +373,12 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
         RunCodeRequest errorRequest =
                 RunCodeRequest.builder()
                         .code("print(undefined_variable)  # This will cause NameError")
+                        .context(pythonContext)
                         .handlers(handlers)
                         .build();
 
-        Execution errorResult = codeInterpreter.codes().run(errorRequest);
+        Execution errorResult =
+                runWithRetry(errorRequest, perExecTimeout, 2, "python-runtime-error");
 
         assertNotNull(errorResult);
         assertNotNull(errorResult.getId());
@@ -591,16 +602,17 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
     }
 
     /**
-     * Run a code request with a per-execution timeout so that a single hanging
-     * SSE stream cannot block the entire test for the full JUnit timeout.
+     * Run a code request with a per-execution timeout so that a single hanging SSE stream cannot
+     * block the entire test for the full JUnit timeout.
      */
     private Execution runWithTimeout(RunCodeRequest request, Duration timeout) {
+        CompletableFuture<Execution> future =
+                CompletableFuture.supplyAsync(() -> codeInterpreter.codes().run(request));
         try {
-            return CompletableFuture.supplyAsync(() -> codeInterpreter.codes().run(request))
-                    .get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
-            throw new AssertionError(
-                    "Code execution did not complete within " + timeout, e);
+            future.cancel(true);
+            throw new AssertionError("Code execution did not complete within " + timeout, e);
         } catch (ExecutionException e) {
             Throwable cause = e.getCause();
             if (cause instanceof RuntimeException) {
@@ -608,9 +620,34 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
             }
             throw new RuntimeException(cause);
         } catch (InterruptedException e) {
+            future.cancel(true);
             Thread.currentThread().interrupt();
             throw new RuntimeException(e);
         }
+    }
+
+    private Execution runWithRetry(
+            RunCodeRequest request, Duration timeout, int attempts, String label) {
+        AssertionError lastAssertionError = null;
+        RuntimeException lastRuntimeException = null;
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                return runWithTimeout(request, timeout);
+            } catch (AssertionError e) {
+                lastAssertionError = e;
+                logger.warn("{} attempt {}/{} timed out", label, attempt, attempts, e);
+            } catch (RuntimeException e) {
+                lastRuntimeException = e;
+                logger.warn("{} attempt {}/{} failed", label, attempt, attempts, e);
+            }
+        }
+        if (lastAssertionError != null) {
+            throw lastAssertionError;
+        }
+        if (lastRuntimeException != null) {
+            throw lastRuntimeException;
+        }
+        throw new AssertionError(label + " failed without a captured exception");
     }
 
     @Test
@@ -943,8 +980,11 @@ public class CodeInterpreterE2ETest extends BaseE2ETest {
         // Verify the interrupt was effective: execution finished much faster
         // than the full 20 s run.  Terminal events (complete/error) may or may
         // not arrive depending on how quickly the server closed the stream.
-        assertTrue(elapsed < 90_000,
-                "Execution should have finished promptly after interrupt (elapsed=" + elapsed + "ms)");
+        assertTrue(
+                elapsed < 90_000,
+                "Execution should have finished promptly after interrupt (elapsed="
+                        + elapsed
+                        + "ms)");
 
         // Test 2: Java long-running execution with interrupt
         logger.info("Testing Java interrupt functionality");

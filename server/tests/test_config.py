@@ -19,12 +19,15 @@ import pytest
 from src import config as config_module
 from src.config import (
     AppConfig,
+    EGRESS_MODE_DNS,
+    EGRESS_MODE_DNS_NFT,
+    EgressConfig,
     GatewayConfig,
     GatewayRouteModeConfig,
     IngressConfig,
     RuntimeConfig,
     ServerConfig,
-    StorageConfig
+    StorageConfig,
 )
 
 
@@ -42,6 +45,7 @@ def test_load_config_from_file(tmp_path, monkeypatch):
         port = 9000
         log_level = "DEBUG"
         api_key = "secret"
+        max_sandbox_timeout_seconds = 172800
 
         [runtime]
         type = "kubernetes"
@@ -61,6 +65,7 @@ def test_load_config_from_file(tmp_path, monkeypatch):
     assert loaded.server.port == 9000
     assert loaded.server.log_level == "DEBUG"
     assert loaded.server.api_key == "secret"
+    assert loaded.server.max_sandbox_timeout_seconds == 172800
     assert loaded.runtime.type == "kubernetes"
     assert loaded.runtime.execd_image == "opensandbox/execd:test"
     assert loaded.ingress is not None
@@ -77,6 +82,11 @@ def test_docker_runtime_disallows_kubernetes_block():
     kubernetes_cfg = config_module.KubernetesRuntimeConfig(namespace="sandbox")
     with pytest.raises(ValueError):
         AppConfig(server=server_cfg, runtime=runtime_cfg, kubernetes=kubernetes_cfg)
+
+
+def test_server_config_defaults_include_max_sandbox_timeout():
+    server_cfg = ServerConfig()
+    assert server_cfg.max_sandbox_timeout_seconds is None
 
 
 def test_kubernetes_runtime_fills_missing_block():
@@ -594,3 +604,9 @@ def test_kubernetes_runtime_with_firecracker_is_valid():
     assert cfg.secure_runtime is not None
     assert cfg.secure_runtime.type == "firecracker"
     assert cfg.secure_runtime.k8s_runtime_class == "kata-fc"
+
+
+def test_egress_config_mode_literal():
+    assert EgressConfig(image="opensandbox/egress:v1").mode == EGRESS_MODE_DNS
+    cfg = EgressConfig(image="opensandbox/egress:v1", mode=EGRESS_MODE_DNS_NFT)
+    assert cfg.mode == EGRESS_MODE_DNS_NFT

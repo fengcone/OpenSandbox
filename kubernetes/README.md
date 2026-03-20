@@ -137,7 +137,7 @@ kind load docker-image <controller-image-name>:<tag>
 kind load docker-image <task-executor-image-name>:<tag>
 ```
 
-For example, if you built your images with `make docker-build IMG=my-controller:latest`, you would load them with:
+For example, if you built your images with `make docker-build CONTROLLER_IMG=my-controller:latest`, you would load them with:
 ```sh
 kind load docker-image my-controller:latest
 ```
@@ -240,7 +240,7 @@ If you're developing or need to customize the chart:
 1. **Build and push your images:**
    ```sh
    # Build and push the controller image
-   make docker-build docker-push IMG=<some-registry>/opensandbox-controller:tag
+   make docker-build docker-push CONTROLLER_IMG=<some-registry>/opensandbox-controller:tag
    
    # Build and push the task-executor image
    make docker-build-task-executor docker-push-task-executor TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
@@ -288,7 +288,7 @@ For more configuration options and advanced usage, see the [Helm Chart README](c
 1. **Build and push your images:**
    ```sh
    # Build and push the controller image
-   make docker-build docker-push IMG=<some-registry>/opensandbox-controller:tag
+   make docker-build docker-push CONTROLLER_IMG=<some-registry>/opensandbox-controller:tag
    
    # Build and push the task-executor image
    make docker-build-task-executor docker-push-task-executor TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
@@ -303,7 +303,7 @@ For more configuration options and advanced usage, see the [Helm Chart README](c
 
 3. **Deploy the Manager to the cluster:**
    ```sh
-   make deploy IMG=<some-registry>/opensandbox-controller:tag TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
+   make deploy CONTROLLER_IMG=<some-registry>/opensandbox-controller:tag TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
    ```
 
    **NOTE**: you may need to grant yourself cluster-admin privileges or be logged in as admin to ensure you have cluster-admin privileges before running the commands.

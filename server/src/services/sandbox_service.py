@@ -101,7 +101,7 @@ class SandboxService(ABC):
         ensure_valid_port(port)
 
     @abstractmethod
-    def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
+    async def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
         """
         Create a new sandbox from a container image.
 

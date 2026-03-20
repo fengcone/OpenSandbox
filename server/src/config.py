@@ -50,6 +50,9 @@ GATEWAY_ROUTE_MODE_WILDCARD = "wildcard"
 GATEWAY_ROUTE_MODE_HEADER = "header"
 GATEWAY_ROUTE_MODE_URI = "uri"
 
+EGRESS_MODE_DNS = "dns"
+EGRESS_MODE_DNS_NFT = "dns+nft"
+
 
 def _is_valid_ip(host: str) -> bool:
     try:
@@ -184,6 +187,14 @@ class ServerConfig(BaseModel):
     eip: Optional[str] = Field(
         default=None,
         description="Bound public IP. When set, used as the host part when returning sandbox endpoints.",
+    )
+    max_sandbox_timeout_seconds: Optional[int] = Field(
+        default=None,
+        ge=60,
+        description=(
+            "Maximum allowed sandbox TTL in seconds for requests that specify timeout. "
+            "Omit from config to disable the server-side upper bound."
+        ),
     )
 
 
@@ -324,6 +335,14 @@ class StorageConfig(BaseModel):
             "Each entry must be an absolute path (e.g., '/data/opensandbox')."
         ),
     )
+    ossfs_mount_root: str = Field(
+        default="/mnt/ossfs",
+        description=(
+            "Host-side root directory where OSSFS mounts are resolved. "
+            "Resolved OSSFS host paths are built as "
+            "'ossfs_mount_root/<bucket>/<volume.subPath?>'."
+        ),
+    )
 
 
 class EgressConfig(BaseModel):
@@ -333,6 +352,13 @@ class EgressConfig(BaseModel):
         default=None,
         description="Container image for the egress sidecar (used when network policy is requested).",
         min_length=1,
+    )
+    mode: Literal[
+        EGRESS_MODE_DNS,
+        EGRESS_MODE_DNS_NFT,
+    ] = Field(
+        default=EGRESS_MODE_DNS,
+        description="Egress enforcement passed to the sidecar as OPENSANDBOX_EGRESS_MODE (dns or dns+nft).",
     )
 
 
@@ -458,7 +484,7 @@ class DockerConfig(BaseModel):
         ),
     )
     pids_limit: Optional[int] = Field(
-        default=512,
+        default=4096,
         ge=1,
         description="Maximum number of processes allowed per sandbox container. Set to null to disable the limit.",
     )
@@ -601,6 +627,8 @@ __all__ = [
     "StorageConfig",
     "KubernetesRuntimeConfig",
     "EgressConfig",
+    "EGRESS_MODE_DNS",
+    "EGRESS_MODE_DNS_NFT",
     "SecureRuntimeConfig",
     "DEFAULT_CONFIG_PATH",
     "CONFIG_ENV_VAR",

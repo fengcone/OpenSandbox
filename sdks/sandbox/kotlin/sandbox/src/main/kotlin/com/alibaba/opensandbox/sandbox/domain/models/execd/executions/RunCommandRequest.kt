@@ -25,6 +25,9 @@ import kotlin.time.Duration
  * @property background Whether to run in background (detached)
  * @property workingDirectory Directory to execute command in
  * @property timeout Maximum execution time; server will terminate when reached.  Null means the server will not enforce any timeout.
+ * @property uid Unix user ID used to run the command process
+ * @property gid Unix group ID used to run the command process. Requires uid.
+ * @property envs Environment variables injected into the command process
  * @property handlers Optional execution handlers
  */
 class RunCommandRequest private constructor(
@@ -32,6 +35,9 @@ class RunCommandRequest private constructor(
     val background: Boolean,
     val workingDirectory: String?,
     val timeout: Duration?,
+    val uid: Int?,
+    val gid: Int?,
+    val envs: Map<String, String>,
     val handlers: ExecutionHandlers?,
 ) {
     companion object {
@@ -44,6 +50,9 @@ class RunCommandRequest private constructor(
         private var background: Boolean = false
         private var workingDirectory: String? = null
         private var timeout: Duration? = null
+        private var uid: Int? = null
+        private var gid: Int? = null
+        private val envs: MutableMap<String, String> = mutableMapOf()
         private var handlers: ExecutionHandlers? = null
 
         fun command(command: String): Builder {
@@ -71,6 +80,35 @@ class RunCommandRequest private constructor(
             return this
         }
 
+        fun uid(uid: Int?): Builder {
+            require(uid == null || uid >= 0) { "Uid must be >= 0" }
+            this.uid = uid
+            return this
+        }
+
+        fun gid(gid: Int?): Builder {
+            require(gid == null || gid >= 0) { "Gid must be >= 0" }
+            this.gid = gid
+            return this
+        }
+
+        fun env(
+            key: String,
+            value: String,
+        ): Builder {
+            require(key.isNotBlank()) { "Environment variable key cannot be blank" }
+            this.envs[key] = value
+            return this
+        }
+
+        fun envs(envs: Map<String, String>): Builder {
+            envs.keys.forEach { key ->
+                require(key.isNotBlank()) { "Environment variable key cannot be blank" }
+            }
+            this.envs.putAll(envs)
+            return this
+        }
+
         fun handlers(handlers: ExecutionHandlers?): Builder {
             this.handlers = handlers
             return this
@@ -78,11 +116,15 @@ class RunCommandRequest private constructor(
 
         fun build(): RunCommandRequest {
             val commandValue = command ?: throw IllegalArgumentException("Command must be specified")
+            require(gid == null || uid != null) { "Uid is required when gid is provided" }
             return RunCommandRequest(
                 command = commandValue,
                 background = background,
                 workingDirectory = workingDirectory,
                 timeout = timeout,
+                uid = uid,
+                gid = gid,
+                envs = envs.toMap(),
                 handlers = handlers,
             )
         }

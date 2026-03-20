@@ -19,6 +19,7 @@ Synchronous adapter for code execution service (including SSE streaming).
 
 import json
 import logging
+import time
 
 import httpx
 from opensandbox.adapters.converter.event_node import EventNode
@@ -26,6 +27,7 @@ from opensandbox.adapters.converter.exception_converter import (
     ExceptionConverter,
 )
 from opensandbox.adapters.converter.response_handler import (
+    extract_request_id,
     handle_api_error,
     require_parsed,
 )
@@ -42,6 +44,22 @@ from code_interpreter.models.code_sync import CodeContextSync, SupportedLanguage
 from code_interpreter.sync.services.code import CodesSync
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_sse_event(event_dict: dict) -> dict:
+    if "type" in event_dict and "timestamp" in event_dict:
+        return event_dict
+    if "code" in event_dict and "message" in event_dict:
+        return {
+            "type": "error",
+            "timestamp": int(time.time() * 1000),
+            "error": {
+                "ename": str(event_dict["code"]),
+                "evalue": str(event_dict["message"]),
+                "traceback": [],
+            },
+        }
+    return event_dict
 
 
 class CodesAdapterSync(CodesSync):
@@ -252,6 +270,7 @@ class CodesAdapterSync(CodesSync):
                     raise SandboxApiException(
                         message=f"Failed to run code. Status code: {response.status_code}",
                         status_code=response.status_code,
+                        request_id=extract_request_id(response.headers),
                     )
 
                 for line in response.iter_lines():
@@ -261,7 +280,7 @@ class CodesAdapterSync(CodesSync):
                     if data.startswith("data:"):
                         data = data[5:].strip()
                     try:
-                        event_dict = json.loads(data)
+                        event_dict = _normalize_sse_event(json.loads(data))
                         event_node = EventNode(**event_dict)
                         dispatcher.dispatch(event_node)
                     except json.JSONDecodeError:

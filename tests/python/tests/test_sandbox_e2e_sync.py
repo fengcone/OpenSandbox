@@ -25,8 +25,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from io import BytesIO
 
+import httpx
 import pytest
 from opensandbox import SandboxSync
+from opensandbox.config.connection_sync import ConnectionConfigSync
+from opensandbox.exceptions import SandboxApiException
 from opensandbox.models.execd import (
     ExecutionComplete,
     ExecutionError,
@@ -42,9 +45,22 @@ from opensandbox.models.filesystem import (
     SetPermissionEntry,
     WriteEntry,
 )
-from opensandbox.models.sandboxes import Host, NetworkPolicy, NetworkRule, PVC, SandboxImageSpec, Volume
+from opensandbox.models.sandboxes import (
+    PVC,
+    Host,
+    NetworkPolicy,
+    NetworkRule,
+    SandboxImageSpec,
+    Volume,
+)
 
-from tests.base_e2e_test import create_connection_config_sync, get_sandbox_image
+from tests.base_e2e_test import (
+    TEST_API_KEY,
+    TEST_DOMAIN,
+    TEST_PROTOCOL,
+    create_connection_config_sync,
+    get_sandbox_image,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +261,25 @@ class TestSandboxE2ESync:
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(1)
+    def test_01b_manual_cleanup(self) -> None:
+        sandbox = SandboxSync.create(
+            image=SandboxImageSpec(get_sandbox_image()),
+            connection_config=TestSandboxE2ESync.connection_config,
+            timeout=None,
+            ready_timeout=timedelta(seconds=30),
+            metadata={"tag": "manual-e2e-test"},
+        )
+        try:
+            info = sandbox.get_info()
+            assert info.expires_at is None
+            assert info.metadata is not None
+            assert info.metadata.get("tag") == "manual-e2e-test"
+        finally:
+            sandbox.kill()
+            sandbox.close()
+
+    @pytest.mark.timeout(120)
+    @pytest.mark.order(1)
     def test_01a_network_policy_create(self) -> None:
         logger.info("=" * 80)
         logger.info("TEST 1a: Creating sandbox with networkPolicy (sync)")
@@ -267,6 +302,71 @@ class TestSandboxE2ESync:
             assert result.error is not None
             result = sandbox.commands.run("curl -I https://pypi.org")
             assert result.error is None
+        finally:
+            try:
+                sandbox.kill()
+            except Exception:
+                pass
+            sandbox.close()
+            try:
+                cfg.transport.close()
+            except Exception:
+                pass
+
+    @pytest.mark.timeout(180)
+    @pytest.mark.order(1)
+    def test_01aa_network_policy_get_and_patch(self) -> None:
+        logger.info("=" * 80)
+        logger.info("TEST 1aa: networkPolicy get/patch (sync)")
+        logger.info("=" * 80)
+
+        cfg = create_connection_config_sync()
+        sandbox = SandboxSync.create(
+            image=SandboxImageSpec(get_sandbox_image()),
+            connection_config=cfg,
+            timeout=timedelta(minutes=2),
+            ready_timeout=timedelta(seconds=30),
+            network_policy=NetworkPolicy(
+                defaultAction="deny",
+                egress=[NetworkRule(action="allow", target="pypi.org")],
+            ),
+        )
+        try:
+            time.sleep(5)
+
+            policy = sandbox.get_egress_policy()
+            assert policy.default_action == "deny"
+            assert policy.egress is not None
+            assert any(rule.target == "pypi.org" and rule.action == "allow" for rule in policy.egress)
+
+            blocked = sandbox.commands.run("curl -I https://www.github.com")
+            assert blocked.error is not None
+            allowed = sandbox.commands.run("curl -I https://pypi.org")
+            assert allowed.error is None
+
+            sandbox.patch_egress_rules(
+                [
+                    NetworkRule(action="allow", target="www.github.com"),
+                    NetworkRule(action="deny", target="pypi.org"),
+                ],
+            )
+            time.sleep(2)
+
+            patched_policy = sandbox.get_egress_policy()
+            assert patched_policy.egress is not None
+            assert any(
+                rule.target == "www.github.com" and rule.action == "allow"
+                for rule in patched_policy.egress
+            )
+            assert any(
+                rule.target == "pypi.org" and rule.action == "deny"
+                for rule in patched_policy.egress
+            )
+
+            github_allowed = sandbox.commands.run("curl -I https://www.github.com")
+            assert github_allowed.error is None
+            pypi_denied = sandbox.commands.run("curl -I https://pypi.org")
+            assert pypi_denied.error is not None
         finally:
             try:
                 sandbox.kill()
@@ -759,6 +859,41 @@ class TestSandboxE2ESync:
         assert "log-line-2" in logs_text
 
     @pytest.mark.timeout(120)
+    @pytest.mark.order(3)
+    def test_02b_run_command_with_envs(self) -> None:
+        """Test run_command env injection via RunCommandOpts.envs (sync)."""
+        TestSandboxE2ESync._ensure_sandbox_created()
+        sandbox = TestSandboxE2ESync.sandbox
+        assert sandbox is not None
+
+        env_key = "OPEN_SANDBOX_E2E_CMD_ENV"
+        env_value = f"env-ok-{int(time.time())}"
+        probe_command = (
+            f"sh -c 'if [ -z \"${{{env_key}:-}}\" ]; then echo \"__EMPTY__\"; "
+            f"else echo \"${{{env_key}}}\"; fi'"
+        )
+
+        # Baseline: variable should be empty when not injected.
+        baseline = sandbox.commands.run(probe_command)
+        assert baseline.error is None
+        baseline_output = "\n".join(msg.text for msg in baseline.logs.stdout).strip()
+        assert baseline_output == "__EMPTY__"
+
+        # Inject environment variables for this command only.
+        injected = sandbox.commands.run(
+            probe_command,
+            opts=RunCommandOpts(
+                envs={
+                    env_key: env_value,
+                    "OPEN_SANDBOX_E2E_SECOND_ENV": "second-ok",
+                }
+            ),
+        )
+        assert injected.error is None
+        injected_output = "\n".join(msg.text for msg in injected.logs.stdout).strip()
+        assert injected_output == env_value
+
+    @pytest.mark.timeout(120)
     @pytest.mark.order(4)
     def test_03_basic_filesystem_operations(self) -> None:
         """Test basic filesystem operations."""
@@ -1105,3 +1240,31 @@ class TestSandboxE2ESync:
         assert echo.error is None
         assert len(echo.logs.stdout) == 1
         assert echo.logs.stdout[0].text == "resume-ok"
+
+    @pytest.mark.timeout(120)
+    @pytest.mark.order(8)
+    def test_07_x_request_id_passthrough_on_server_error(self) -> None:
+        request_id = f"e2e-py-sync-server-{int(time.time() * 1000)}"
+        missing_sandbox_id = f"missing-{request_id}"
+        cfg = ConnectionConfigSync(
+            domain=TEST_DOMAIN,
+            api_key=TEST_API_KEY,
+            request_timeout=timedelta(minutes=3),
+            protocol=TEST_PROTOCOL,
+            headers={"X-Request-ID": request_id},
+            transport=httpx.HTTPTransport(
+                limits=httpx.Limits(
+                    max_connections=100,
+                    max_keepalive_connections=20,
+                    keepalive_expiry=15,
+                )
+            ),
+        )
+
+        try:
+            with pytest.raises(SandboxApiException) as ei:
+                connected = SandboxSync.connect(missing_sandbox_id, connection_config=cfg)
+                connected.get_info()
+            assert ei.value.request_id == request_id
+        finally:
+            cfg.transport.close()

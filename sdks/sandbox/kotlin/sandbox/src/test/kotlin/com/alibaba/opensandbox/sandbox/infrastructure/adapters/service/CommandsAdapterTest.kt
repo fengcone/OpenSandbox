@@ -18,20 +18,29 @@ package com.alibaba.opensandbox.sandbox.infrastructure.adapters.service
 
 import com.alibaba.opensandbox.sandbox.HttpClientProvider
 import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
+import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxApiException
 import com.alibaba.opensandbox.sandbox.domain.models.execd.executions.ExecutionHandlers
 import com.alibaba.opensandbox.sandbox.domain.models.execd.executions.RunCommandRequest
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class CommandsAdapterTest {
+    // CommandsAdapter unit tests
     private lateinit var mockWebServer: MockWebServer
     private lateinit var commandsAdapter: CommandsAdapter
     private lateinit var httpClientProvider: HttpClientProvider
@@ -41,7 +50,6 @@ class CommandsAdapterTest {
         mockWebServer = MockWebServer()
         mockWebServer.start()
 
-        val baseUrl = mockWebServer.url("/").toString()
         // We need to parse the port from MockWebServer to simulate the Execd endpoint
         val host = mockWebServer.hostName
         val port = mockWebServer.port
@@ -93,6 +101,10 @@ class CommandsAdapterTest {
         val request =
             RunCommandRequest.builder()
                 .command("echo Hello")
+                .uid(1000)
+                .gid(1000)
+                .env("APP_ENV", "test")
+                .env("LOG_LEVEL", "debug")
                 .handlers(handlers)
                 .build()
 
@@ -105,5 +117,40 @@ class CommandsAdapterTest {
         val recordedRequest = mockWebServer.takeRequest()
         assertEquals("/command", recordedRequest.path)
         assertEquals("POST", recordedRequest.method)
+        val requestBodyJson = Json.parseToJsonElement(recordedRequest.body.readUtf8()).jsonObject
+        assertEquals("echo Hello", requestBodyJson["command"]?.jsonPrimitive?.content)
+        assertEquals(1000, requestBodyJson["uid"]?.jsonPrimitive?.intOrNull)
+        assertEquals(1000, requestBodyJson["gid"]?.jsonPrimitive?.intOrNull)
+        val envs = requestBodyJson["envs"]?.jsonObject
+        assertEquals("test", envs?.get("APP_ENV")?.jsonPrimitive?.content)
+        assertEquals("debug", envs?.get("LOG_LEVEL")?.jsonPrimitive?.content)
+        // Builder defaults background to false; request body always includes it
+        assertEquals(false, requestBodyJson["background"]?.jsonPrimitive?.booleanOrNull)
+    }
+
+    @Test
+    fun `run command builder should require uid when gid is provided`() {
+        assertThrows<IllegalArgumentException> {
+            RunCommandRequest.builder()
+                .command("id")
+                .gid(1000)
+                .build()
+        }
+    }
+
+    @Test
+    fun `run should expose request id on api exception`() {
+        mockWebServer.enqueue(
+            MockResponse()
+                .setResponseCode(500)
+                .addHeader("X-Request-ID", "req-kotlin-123")
+                .setBody("""{"code":"INTERNAL_ERROR","message":"boom"}"""),
+        )
+
+        val request = RunCommandRequest.builder().command("echo Hello").build()
+        val ex = assertThrows(SandboxApiException::class.java) { commandsAdapter.run(request) }
+
+        assertEquals(500, ex.statusCode)
+        assertEquals("req-kotlin-123", ex.requestId)
     }
 }

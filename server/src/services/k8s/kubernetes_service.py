@@ -19,9 +19,10 @@ This module provides a Kubernetes implementation of the sandbox service interfac
 using Kubernetes resources for sandbox lifecycle management.
 """
 
+import asyncio
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 from fastapi import HTTPException, status
@@ -39,18 +40,24 @@ from src.api.schema import (
     Sandbox,
     SandboxStatus,
 )
-from src.config import AppConfig, get_config
+from src.config import AppConfig, EGRESS_MODE_DNS, get_config
 from src.services.constants import (
+    SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY,
     SANDBOX_ID_LABEL,
+    SANDBOX_MANUAL_CLEANUP_LABEL,
     SandboxErrorCodes,
 )
+from src.services.endpoint_auth import generate_egress_token
+from src.services.endpoint_auth import build_egress_auth_headers, merge_endpoint_headers
 from src.services.helpers import matches_filter
 from src.services.sandbox_service import SandboxService
 from src.services.validators import (
+    calculate_expiration_or_raise,
     ensure_entrypoint,
     ensure_egress_configured,
     ensure_future_expiration,
     ensure_metadata_labels,
+    ensure_timeout_within_limit,
     ensure_volumes_valid,
 )
 from src.services.k8s.client import K8sClient
@@ -132,7 +139,7 @@ class KubernetesSandboxService(SandboxService):
             self.execd_image,
         )
     
-    def _wait_for_sandbox_ready(
+    async def _wait_for_sandbox_ready(
         self,
         sandbox_id: str,
         timeout_seconds: int = 60,
@@ -199,7 +206,7 @@ class KubernetesSandboxService(SandboxService):
                 )
             
             # Wait before next poll
-            time.sleep(poll_interval_seconds)
+            await asyncio.sleep(poll_interval_seconds)
         
         # Timeout
         elapsed = time.time() - start_time
@@ -244,7 +251,7 @@ class KubernetesSandboxService(SandboxService):
             },
         )
 
-    def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
+    async def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
         """
         Create a new sandbox using Kubernetes Pod.
         
@@ -262,20 +269,29 @@ class KubernetesSandboxService(SandboxService):
         # Validate request
         ensure_entrypoint(request.entrypoint)
         ensure_metadata_labels(request.metadata)
+        ensure_timeout_within_limit(
+            request.timeout,
+            self.app_config.server.max_sandbox_timeout_seconds,
+        )
         self._ensure_network_policy_support(request)
         self._ensure_image_auth_support(request)
         
         # Generate sandbox ID
         sandbox_id = self.generate_sandbox_id()
         
-        # Calculate expiration time
+        # Calculate expiration time (None = no TTL, manual cleanup only; same as Docker)
         created_at = datetime.now(timezone.utc)
-        expires_at = created_at + timedelta(seconds=request.timeout)
-        
+        expires_at = None
+        if request.timeout is not None:
+            expires_at = calculate_expiration_or_raise(created_at, request.timeout)
+
         # Build labels
         labels = {
             SANDBOX_ID_LABEL: sandbox_id,
         }
+        annotations: Dict[str, str] = {}
+        if expires_at is None:
+            labels[SANDBOX_MANUAL_CLEANUP_LABEL] = "true"
         
         # Add user metadata as labels
         if request.metadata:
@@ -287,10 +303,18 @@ class KubernetesSandboxService(SandboxService):
             resource_limits = request.resource_limits.root
         
         try:
+            egress_mode = (
+                self.app_config.egress.mode
+                if self.app_config.egress
+                else EGRESS_MODE_DNS
+            )
             # Get egress image if network policy is provided
             egress_image = None
+            egress_auth_token = None
             if request.network_policy:
                 egress_image = self.app_config.egress.image if self.app_config.egress else None
+                egress_auth_token = generate_egress_token()
+                annotations[SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY] = egress_auth_token
             
             # Validate volumes before creating workload
             ensure_volumes_valid(
@@ -307,11 +331,14 @@ class KubernetesSandboxService(SandboxService):
                 env=request.env or {},
                 resource_limits=resource_limits,
                 labels=labels,
+                annotations=annotations or None,
                 expires_at=expires_at,
                 execd_image=self.execd_image,
                 extensions=request.extensions,
                 network_policy=request.network_policy,
                 egress_image=egress_image,
+                egress_auth_token=egress_auth_token,
+                egress_mode=egress_mode,
                 volumes=request.volumes,
             )
             
@@ -323,7 +350,7 @@ class KubernetesSandboxService(SandboxService):
             
             # Wait for Pod to be Running with IP
             try:
-                workload = self._wait_for_sandbox_ready(
+                workload = await self._wait_for_sandbox_ready(
                     sandbox_id=sandbox_id,
                     timeout_seconds=self.app_config.kubernetes.sandbox_create_timeout_seconds,
                     poll_interval_seconds=self.app_config.kubernetes.sandbox_create_poll_interval_seconds,
@@ -596,7 +623,17 @@ class KubernetesSandboxService(SandboxService):
                         "message": f"Sandbox '{sandbox_id}' not found",
                     },
                 )
-            
+
+            current_expiration = self.workload_provider.get_expiration(workload)
+            if current_expiration is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": SandboxErrorCodes.INVALID_EXPIRATION,
+                        "message": f"Sandbox {sandbox_id} does not have automatic expiration enabled.",
+                    },
+                )
+
             # Update BatchSandbox spec.expireTime field
             self.workload_provider.update_expiration(
                 sandbox_id=sandbox_id,
@@ -670,6 +707,7 @@ class KubernetesSandboxService(SandboxService):
                         "message": "Pod IP is not yet available. The Pod may still be starting.",
                     },
                 )
+            self._attach_egress_auth_headers(endpoint, workload)
             return endpoint
             
         except HTTPException:
@@ -683,7 +721,29 @@ class KubernetesSandboxService(SandboxService):
                     "message": f"Failed to get endpoint: {str(e)}",
                 },
             ) from e
-    
+
+    def _attach_egress_auth_headers(self, endpoint: Endpoint, workload: Any) -> None:
+        token = self._get_egress_auth_token(workload)
+        if not token:
+            return
+
+        endpoint.headers = merge_endpoint_headers(
+            endpoint.headers,
+            build_egress_auth_headers(token),
+        )
+
+    def _get_egress_auth_token(self, workload: Any) -> Optional[str]:
+        if isinstance(workload, dict):
+            metadata = workload.get("metadata", {})
+            annotations = metadata.get("annotations", {}) or {}
+            return annotations.get(SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY)
+
+        metadata = getattr(workload, "metadata", None)
+        annotations = getattr(metadata, "annotations", None) or {}
+        if isinstance(annotations, dict):
+            return annotations.get(SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY)
+        return None
+
     def _build_sandbox_from_workload(self, workload: Any) -> Sandbox:
         """
         Build Sandbox object from Kubernetes workload.

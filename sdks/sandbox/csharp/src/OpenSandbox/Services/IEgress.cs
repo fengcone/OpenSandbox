@@ -1,4 +1,4 @@
-// Copyright 2025 Alibaba Group Holding Ltd.
+// Copyright 2026 Alibaba Group Holding Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,12 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package e2e_runtime
+using OpenSandbox.Models;
 
-const (
-	// SandboxImage is the image used for sandbox containers in tests
-	SandboxImage = "example.com/task-executor:v0.0.1"
+namespace OpenSandbox.Services;
 
-	// TaskExecutorImage is the name of the task-executor image
-	TaskExecutorImage = "example.com/task-executor:v0.0.1"
-)
+/// <summary>
+/// Service interface for direct egress sidecar operations.
+/// </summary>
+public interface IEgress
+{
+    Task<NetworkPolicy> GetPolicyAsync(CancellationToken cancellationToken = default);
+
+    Task PatchRulesAsync(
+        IReadOnlyList<NetworkRule> rules,
+        CancellationToken cancellationToken = default);
+}

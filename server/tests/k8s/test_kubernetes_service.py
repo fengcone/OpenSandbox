@@ -22,8 +22,15 @@ from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
 
 from src.services.k8s.kubernetes_service import KubernetesSandboxService
-from src.services.constants import SandboxErrorCodes
-from src.api.schema import ImageAuth, ListSandboxesRequest
+from src.services.constants import (
+    OPEN_SANDBOX_EGRESS_AUTH_HEADER,
+    SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY,
+    SANDBOX_MANUAL_CLEANUP_LABEL,
+    SandboxErrorCodes,
+)
+from src.api.schema import ImageAuth, ListSandboxesRequest, NetworkPolicy
+from src.config import EGRESS_MODE_DNS, EGRESS_MODE_DNS_NFT, EgressConfig
+from src.api.schema import Endpoint
 
 
 class TestKubernetesSandboxServiceInit:
@@ -91,7 +98,8 @@ class TestKubernetesSandboxServiceInit:
 class TestKubernetesSandboxServiceCreate:
     """KubernetesSandboxService create_sandbox tests"""
     
-    def test_create_sandbox_with_valid_request_succeeds(
+    @pytest.mark.asyncio
+    async def test_create_sandbox_with_valid_request_succeeds(
         self, k8s_service, create_sandbox_request, mock_workload
     ):
         """
@@ -114,14 +122,15 @@ class TestKubernetesSandboxServiceCreate:
         k8s_service.workload_provider.get_endpoint_info.return_value = "10.244.0.5:8080"
         k8s_service.workload_provider.get_expiration.return_value = datetime.now(timezone.utc) + timedelta(hours=1)
         
-        response = k8s_service.create_sandbox(create_sandbox_request)
+        response = await k8s_service.create_sandbox(create_sandbox_request)
         
         # CreateSandboxResponse uses 'id' field
         assert response.id is not None
         assert response.status.state == "Running"
         k8s_service.workload_provider.create_workload.assert_called_once()
 
-    def test_create_sandbox_uses_configured_timeout_and_poll_interval(
+    @pytest.mark.asyncio
+    async def test_create_sandbox_uses_configured_timeout_and_poll_interval(
         self, k8s_service, create_sandbox_request, mock_workload
     ):
         """
@@ -131,7 +140,7 @@ class TestKubernetesSandboxServiceCreate:
         sandbox_create_poll_interval_seconds are read from KubernetesRuntimeConfig
         and forwarded to _wait_for_sandbox_ready.
         """
-        from unittest.mock import patch
+
 
         k8s_service.workload_provider.create_workload.return_value = {
             "name": "test-sandbox-123",
@@ -150,14 +159,15 @@ class TestKubernetesSandboxServiceCreate:
         k8s_service.app_config.kubernetes.sandbox_create_poll_interval_seconds = 0.5
 
         with patch.object(k8s_service, "_wait_for_sandbox_ready", wraps=k8s_service._wait_for_sandbox_ready) as mock_wait:
-            k8s_service.create_sandbox(create_sandbox_request)
+            await k8s_service.create_sandbox(create_sandbox_request)
 
         mock_wait.assert_called_once()
         _, kwargs = mock_wait.call_args
         assert kwargs["timeout_seconds"] == 120
         assert kwargs["poll_interval_seconds"] == 0.5
 
-    def test_create_sandbox_rejects_image_auth_when_provider_not_supported(
+    @pytest.mark.asyncio
+    async def test_create_sandbox_rejects_image_auth_when_provider_not_supported(
         self, k8s_service, create_sandbox_request
     ):
         k8s_service.workload_provider.supports_image_auth.return_value = False
@@ -167,13 +177,14 @@ class TestKubernetesSandboxServiceCreate:
         )
 
         with pytest.raises(HTTPException) as exc_info:
-            k8s_service.create_sandbox(create_sandbox_request)
+            await k8s_service.create_sandbox(create_sandbox_request)
 
         assert exc_info.value.status_code == 400
         assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_PARAMETER
         k8s_service.workload_provider.create_workload.assert_not_called()
 
-    def test_create_sandbox_allows_image_auth_when_provider_supported(
+    @pytest.mark.asyncio
+    async def test_create_sandbox_allows_image_auth_when_provider_supported(
         self, k8s_service, create_sandbox_request
     ):
         k8s_service.workload_provider.supports_image_auth.return_value = True
@@ -191,14 +202,128 @@ class TestKubernetesSandboxServiceCreate:
         }
 
         # Should not raise
-        k8s_service.create_sandbox(create_sandbox_request)
+        await k8s_service.create_sandbox(create_sandbox_request)
         k8s_service.workload_provider.create_workload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_create_sandbox_with_no_timeout_calls_provider_with_expires_at_none_and_manual_cleanup_label(
+        self, k8s_service, create_sandbox_request
+    ):
+        """When timeout is None (manual cleanup), provider receives expires_at=None and manual-cleanup label."""
+        create_sandbox_request.timeout = None
+        k8s_service.workload_provider.create_workload.return_value = {
+            "name": "test-id", "uid": "uid-1"
+        }
+        k8s_service.workload_provider.get_workload.return_value = MagicMock()
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running", "reason": "", "message": "",
+            "last_transition_at": datetime.now(timezone.utc),
+        }
+
+        await k8s_service.create_sandbox(create_sandbox_request)
+
+        k8s_service.workload_provider.create_workload.assert_called_once()
+        _, kwargs = k8s_service.workload_provider.create_workload.call_args
+        assert kwargs["expires_at"] is None
+        assert kwargs["labels"].get(SANDBOX_MANUAL_CLEANUP_LABEL) == "true"
+
+    @pytest.mark.asyncio
+    async def test_create_sandbox_with_network_policy_passes_egress_token_and_annotations(
+        self, k8s_service, create_sandbox_request
+    ):
+        create_sandbox_request.network_policy = NetworkPolicy(default_action="deny", egress=[])
+        k8s_service.app_config.egress = EgressConfig(image="opensandbox/egress:v1.0.3")
+        k8s_service.workload_provider.create_workload.return_value = {
+            "name": "test-id", "uid": "uid-1"
+        }
+        k8s_service.workload_provider.get_workload.return_value = MagicMock()
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running", "reason": "", "message": "",
+            "last_transition_at": datetime.now(timezone.utc),
+        }
+
+        with patch(
+            "src.services.k8s.kubernetes_service.generate_egress_token",
+            return_value="egress-token",
+        ):
+            await k8s_service.create_sandbox(create_sandbox_request)
+
+        _, kwargs = k8s_service.workload_provider.create_workload.call_args
+        assert kwargs["egress_auth_token"] == "egress-token"
+        assert kwargs["egress_mode"] == EGRESS_MODE_DNS
+        assert kwargs["annotations"][SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY] == "egress-token"
+
+    @pytest.mark.asyncio
+    async def test_create_sandbox_with_network_policy_passes_egress_mode_dns_nft_from_config(
+        self, k8s_service, create_sandbox_request
+    ):
+        create_sandbox_request.network_policy = NetworkPolicy(default_action="deny", egress=[])
+        k8s_service.app_config.egress = EgressConfig(
+            image="opensandbox/egress:v1.0.3",
+            mode=EGRESS_MODE_DNS_NFT,
+        )
+        k8s_service.workload_provider.create_workload.return_value = {
+            "name": "test-id", "uid": "uid-1"
+        }
+        k8s_service.workload_provider.get_workload.return_value = MagicMock()
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running", "reason": "", "message": "",
+            "last_transition_at": datetime.now(timezone.utc),
+        }
+
+        with patch(
+            "src.services.k8s.kubernetes_service.generate_egress_token",
+            return_value="egress-token",
+        ):
+            await k8s_service.create_sandbox(create_sandbox_request)
+
+        _, kwargs = k8s_service.workload_provider.create_workload.call_args
+        assert kwargs["egress_mode"] == EGRESS_MODE_DNS_NFT
+
+    def test_get_endpoint_merges_egress_auth_header_from_instance_metadata(
+        self, k8s_service
+    ):
+        k8s_service.workload_provider.get_workload.return_value = {
+            "metadata": {
+                "annotations": {
+                    SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY: "egress-token",
+                }
+            }
+        }
+        k8s_service.workload_provider.get_endpoint_info.return_value = Endpoint(
+            endpoint="gateway.example.com",
+            headers={"OpenSandbox-Ingress-To": "sbx-123-44772"},
+        )
+
+        endpoint = k8s_service.get_endpoint("sbx-123", 44772)
+
+        assert endpoint.endpoint == "gateway.example.com"
+        assert endpoint.headers == {
+            "OpenSandbox-Ingress-To": "sbx-123-44772",
+            OPEN_SANDBOX_EGRESS_AUTH_HEADER: "egress-token",
+        }
+
+    @pytest.mark.asyncio
+    async def test_create_sandbox_rejects_timeout_above_configured_maximum(
+        self, k8s_service, create_sandbox_request
+    ):
+        k8s_service.app_config.server.max_sandbox_timeout_seconds = 3600
+        create_sandbox_request.timeout = 7200
+
+        with pytest.raises(HTTPException) as exc_info:
+            await k8s_service.create_sandbox(create_sandbox_request)
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_PARAMETER
+        assert "configured maximum of 3600s" in exc_info.value.detail["message"]
+        k8s_service.workload_provider.create_workload.assert_not_called()
 
 
 class TestWaitForSandboxReady:
     """_wait_for_sandbox_ready method tests"""
     
-    def test_wait_for_running_pod_succeeds(self, k8s_service, mock_workload):
+    @pytest.mark.asyncio
+    async def test_wait_for_running_pod_succeeds(self, k8s_service, mock_workload):
         """
         Test case: Successfully wait for Running Pod
         
@@ -212,11 +337,12 @@ class TestWaitForSandboxReady:
             "last_transition_at": datetime.now(timezone.utc),
         }
         
-        result = k8s_service._wait_for_sandbox_ready("test-sandbox-id", timeout_seconds=10)
+        result = await k8s_service._wait_for_sandbox_ready("test-sandbox-id", timeout_seconds=10)
         
         assert result == mock_workload
     
-    def test_wait_for_pending_then_running_succeeds(self, k8s_service, mock_workload):
+    @pytest.mark.asyncio
+    async def test_wait_for_pending_then_running_succeeds(self, k8s_service, mock_workload):
         """
         Test case: Successfully wait from Pending to Allocated to Running
         
@@ -232,12 +358,13 @@ class TestWaitForSandboxReady:
         k8s_service.workload_provider.get_workload.return_value = mock_workload
         k8s_service.workload_provider.get_status.side_effect = status_sequence
         
-        result = k8s_service._wait_for_sandbox_ready("test-sandbox-id", timeout_seconds=10, poll_interval_seconds=0.1)
+        result = await k8s_service._wait_for_sandbox_ready("test-sandbox-id", timeout_seconds=10, poll_interval_seconds=0.1)
         
         assert result == mock_workload
         assert k8s_service.workload_provider.get_status.call_count == 2
     
-    def test_wait_for_allocated_pod_returns_immediately(self, k8s_service, mock_workload):
+    @pytest.mark.asyncio
+    async def test_wait_for_allocated_pod_returns_immediately(self, k8s_service, mock_workload):
         """
         Test case: Returns immediately when Pod reaches Allocated state (IP assigned)
         
@@ -251,11 +378,12 @@ class TestWaitForSandboxReady:
             "last_transition_at": datetime.now(timezone.utc),
         }
         
-        result = k8s_service._wait_for_sandbox_ready("test-sandbox-id", timeout_seconds=10)
+        result = await k8s_service._wait_for_sandbox_ready("test-sandbox-id", timeout_seconds=10)
         
         assert result == mock_workload
     
-    def test_wait_timeout_raises_exception(self, k8s_service, mock_workload):
+    @pytest.mark.asyncio
+    async def test_wait_timeout_raises_exception(self, k8s_service, mock_workload):
         """
         Test case: Raises exception on wait timeout
         
@@ -270,10 +398,27 @@ class TestWaitForSandboxReady:
         }
         
         with pytest.raises(HTTPException) as exc_info:
-            k8s_service._wait_for_sandbox_ready("test-sandbox-id", timeout_seconds=1, poll_interval_seconds=0.5)
+            await k8s_service._wait_for_sandbox_ready("test-sandbox-id", timeout_seconds=1, poll_interval_seconds=0.5)
         
         assert exc_info.value.status_code == 504  # Gateway Timeout
         assert "timeout" in exc_info.value.detail["message"].lower()
+
+
+class TestKubernetesSandboxServiceRenew:
+    def test_renew_expiration_rejects_manual_cleanup_sandbox(self, k8s_service):
+        k8s_service.workload_provider.get_workload.return_value = MagicMock()
+        k8s_service.workload_provider.get_expiration.return_value = None
+        request = MagicMock(expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+
+        with pytest.raises(HTTPException) as exc_info:
+            k8s_service.renew_expiration("test-sandbox-id", request)
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_EXPIRATION
+        assert (
+            exc_info.value.detail["message"]
+            == "Sandbox test-sandbox-id does not have automatic expiration enabled."
+        )
 
 
 class TestGetSandbox:
@@ -533,3 +678,19 @@ class TestRenewExpiration:
             k8s_service.renew_expiration("test-sandbox-id", request)
         
         assert exc_info.value.status_code == 400
+
+    def test_renew_returns_409_when_sandbox_has_no_expiration(self, k8s_service):
+        """Renew is rejected with 409 when sandbox has no TTL (manual cleanup)."""
+        k8s_service.workload_provider.get_workload.return_value = MagicMock()
+        k8s_service.workload_provider.get_expiration.return_value = None
+        from src.api.schema import RenewSandboxExpirationRequest
+        request = RenewSandboxExpirationRequest(
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            k8s_service.renew_expiration("no-ttl-sandbox", request)
+
+        assert exc_info.value.status_code == 409
+        assert "does not have automatic expiration" in exc_info.value.detail["message"]
+        k8s_service.workload_provider.update_expiration.assert_not_called()

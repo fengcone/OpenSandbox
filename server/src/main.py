@@ -106,10 +106,6 @@ async def lifespan(app: FastAPI):
             k8s_client=k8s_client,
         )
 
-        # Create sandbox service after validation
-        from src.services.factory import create_sandbox_service
-
-        app.state.sandbox_service = create_sandbox_service()
     except Exception as exc:
         logger.error("Secure runtime validation failed: %s", exc)
         raise
