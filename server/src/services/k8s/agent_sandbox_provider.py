@@ -37,6 +37,9 @@ from src.services.k8s.client import K8sClient
 from src.services.k8s.egress_helper import (
     apply_egress_to_spec,
     build_security_context_for_sandbox_container,
+    prep_execd_init_for_egress,
+)
+from src.services.k8s.security_context import (
     build_security_context_from_dict,
     serialize_security_context_to_dict,
 )
@@ -222,7 +225,10 @@ class AgentSandboxProvider(WorkloadProvider):
         egress_mode: str = EGRESS_MODE_DNS,
     ) -> Dict[str, Any]:
         """Build pod spec dict for the Sandbox CRD."""
-        init_container = self._build_execd_init_container(execd_image)
+        disable_ipv6_for_egress = network_policy is not None and egress_image is not None
+        init_container = self._build_execd_init_container(
+            execd_image, disable_ipv6_for_egress=disable_ipv6_for_egress
+        )
         main_container = self._build_main_container(
             image_spec=image_spec,
             entrypoint=entrypoint,
@@ -252,7 +258,6 @@ class AgentSandboxProvider(WorkloadProvider):
 
         # Add egress sidecar if network policy is provided
         apply_egress_to_spec(
-            pod_spec=pod_spec,
             containers=containers,
             network_policy=network_policy,
             egress_image=egress_image,
@@ -262,7 +267,12 @@ class AgentSandboxProvider(WorkloadProvider):
 
         return pod_spec
 
-    def _build_execd_init_container(self, execd_image: str) -> V1Container:
+    def _build_execd_init_container(
+        self,
+        execd_image: str,
+        *,
+        disable_ipv6_for_egress: bool = False,
+    ) -> V1Container:
         """Build init container that copies execd binary to the shared volume."""
         script = (
             "cp ./execd /opt/opensandbox/bin/execd && "
@@ -270,6 +280,10 @@ class AgentSandboxProvider(WorkloadProvider):
             "chmod +x /opt/opensandbox/bin/execd && "
             "chmod +x /opt/opensandbox/bin/bootstrap.sh"
         )
+        security_context = None
+        if disable_ipv6_for_egress:
+            script, sc_dict = prep_execd_init_for_egress(script)
+            security_context = build_security_context_from_dict(sc_dict)
 
         resources = None
         if self.execd_init_resources:
@@ -290,6 +304,7 @@ class AgentSandboxProvider(WorkloadProvider):
                 )
             ],
             resources=resources,
+            security_context=security_context,
         )
 
     def _build_main_container(

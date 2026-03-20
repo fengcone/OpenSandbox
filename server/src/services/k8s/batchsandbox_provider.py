@@ -41,6 +41,9 @@ from src.services.k8s.client import K8sClient
 from src.services.k8s.egress_helper import (
     apply_egress_to_spec,
     build_security_context_for_sandbox_container,
+    prep_execd_init_for_egress,
+)
+from src.services.k8s.security_context import (
     build_security_context_from_dict,
     serialize_security_context_to_dict,
 )
@@ -181,7 +184,10 @@ class BatchSandboxProvider(WorkloadProvider):
         extra_volumes, extra_mounts = self._extract_template_pod_extras()
 
         # Build init container for execd installation
-        init_container = self._build_execd_init_container(execd_image)
+        disable_ipv6_for_egress = network_policy is not None and egress_image is not None
+        init_container = self._build_execd_init_container(
+            execd_image, disable_ipv6_for_egress=disable_ipv6_for_egress
+        )
         
         # Build main container with execd support
         main_container = self._build_main_container(
@@ -219,7 +225,6 @@ class BatchSandboxProvider(WorkloadProvider):
 
         # Add egress sidecar if network policy is provided
         apply_egress_to_spec(
-            pod_spec=pod_spec,
             containers=containers,
             network_policy=network_policy,
             egress_image=egress_image,
@@ -490,7 +495,12 @@ class BatchSandboxProvider(WorkloadProvider):
             }
         }
     
-    def _build_execd_init_container(self, execd_image: str) -> V1Container:
+    def _build_execd_init_container(
+        self,
+        execd_image: str,
+        *,
+        disable_ipv6_for_egress: bool = False,
+    ) -> V1Container:
         """
         Build init container for execd installation.
         
@@ -503,6 +513,8 @@ class BatchSandboxProvider(WorkloadProvider):
         
         Args:
             execd_image: execd container image
+            disable_ipv6_for_egress: When True, disable IPv6 in the Pod netns first
+                (privileged) then install binaries; used with egress sidecar.
             
         Returns:
             V1Container: Init container spec
@@ -514,6 +526,10 @@ class BatchSandboxProvider(WorkloadProvider):
             "chmod +x /opt/opensandbox/bin/execd && "
             "chmod +x /opt/opensandbox/bin/bootstrap.sh"
         )
+        security_context = None
+        if disable_ipv6_for_egress:
+            script, sc_dict = prep_execd_init_for_egress(script)
+            security_context = build_security_context_from_dict(sc_dict)
 
         resources = None
         if self.execd_init_resources:
@@ -534,6 +550,7 @@ class BatchSandboxProvider(WorkloadProvider):
                 )
             ],
             resources=resources,
+            security_context=security_context,
         )
     
     def _build_main_container(

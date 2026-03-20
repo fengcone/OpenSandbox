@@ -13,14 +13,14 @@
 # limitations under the License.
 
 """
-Egress sidecar helper functions for Kubernetes workloads.
+Egress sidecar helpers for Kubernetes pod specs.
 
-This module provides shared utilities for building egress sidecar containers
-and related configurations that can be reused across different workload providers.
+Public entry points: ``prep_execd_init_for_egress``, ``build_security_context_for_sandbox_container``,
+``apply_egress_to_spec``. SecurityContext dict ↔ V1 conversion lives in ``security_context``.
 """
 
 import json
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.api.schema import NetworkPolicy
 from src.config import EGRESS_MODE_DNS
@@ -30,127 +30,38 @@ from src.services.constants import (
     OPENSANDBOX_EGRESS_TOKEN,
 )
 
-# Privileged sidecar: IPv6 disable is applied at container start (see EGRESS_K8S_START_COMMAND), not via Pod sysctls.
-EGRESS_K8S_START_COMMAND = [
-    "/bin/sh",
-    "-c",
-    "sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 && /egress",
-]
 
-
-def build_egress_sidecar_container(
-    egress_image: str,
-    network_policy: NetworkPolicy,
-    egress_auth_token: Optional[str] = None,
-    egress_mode: str = EGRESS_MODE_DNS,
-) -> Dict[str, Any]:
+def prep_execd_init_for_egress(exec_install_script: str) -> tuple[str, Dict[str, Any]]:
     """
-    Build egress sidecar container specification for Kubernetes Pod.
-    
-    This function creates a container spec that can be added to a Pod's containers
-    list. The sidecar container will:
-    - Run **privileged** with a startup command that runs ``sysctl`` then ``/egress``
-    - Receive network policy via OPENSANDBOX_EGRESS_RULES environment variable
+    Prepare execd init when an egress sidecar is used: disable IPv6 in the Pod netns, then install.
 
-    Note: In Kubernetes, containers in the same Pod share the network namespace,
-    so the main container can access the sidecar's ports (44772 for execd, 8080 for HTTP)
-    via localhost without explicit port declarations.
-
-    IPv6 for ``all`` interfaces is disabled inside the sidecar start script; Pod-level
-    ``net.ipv6.conf.all.disable_ipv6`` sysctl injection is not used.
-    
-    Args:
-        egress_image: Container image for the egress sidecar
-        network_policy: Network policy configuration to enforce
-        egress_auth_token: Optional bearer token for egress HTTP API
-        egress_mode: ``dns`` or ``dns+nft`` (``OPENSANDBOX_EGRESS_MODE``)
+    Writes ``/proc/sys/.../disable_ipv6`` (no ``sysctl`` binary required). The returned
+    security context dict must be applied to the execd init container (typically via
+    ``build_security_context_from_dict`` in ``security_context``).
 
     Returns:
-        Dict containing container specification compatible with Kubernetes Pod spec.
-        This dict can be directly added to the Pod's containers list.
-        
-    Example:
-        ```python
-        sidecar = build_egress_sidecar_container(
-            egress_image="opensandbox/egress:v1.0.3",
-            network_policy=NetworkPolicy(
-                default_action="deny",
-                egress=[NetworkRule(action="allow", target="pypi.org")]
-            )
-        )
-        pod_spec["containers"].append(sidecar)
-        ```
+        ``(prefixed_shell_script, {"privileged": True})``
     """
-    # Serialize network policy to JSON for environment variable
-    policy_payload = json.dumps(
-        network_policy.model_dump(by_alias=True, exclude_none=True)
+    script = (
+        "set -e; "
+        "echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6 && "
+        f"{exec_install_script}"
     )
-    
-    env = [
-        {
-            "name": EGRESS_RULES_ENV,
-            "value": policy_payload,
-        },
-        {
-            "name": EGRESS_MODE_ENV,
-            "value": egress_mode,
-        },
-    ]
-    if egress_auth_token:
-        env.append(
-            {
-                "name": OPENSANDBOX_EGRESS_TOKEN,
-                "value": egress_auth_token,
-            }
-        )
-
-    # Build container specification
-    container_spec: Dict[str, Any] = {
-        "name": "egress",
-        "image": egress_image,
-        "command": EGRESS_K8S_START_COMMAND,
-        "env": env,
-        "securityContext": _build_security_context_for_egress(),
-    }
-
-    return container_spec
-
-
-def _build_security_context_for_egress() -> Dict[str, Any]:
-    """
-    Build security context for egress sidecar container.
-
-    The sidecar runs **privileged** so it can manage iptables/nft and run sysctl
-    inside the container network namespace at startup.
-
-    Returns:
-        Dict containing security context with ``privileged: true``.
-    """
-    return {
-        "privileged": True,
-    }
+    return script, {"privileged": True}
 
 
 def build_security_context_for_sandbox_container(
     has_network_policy: bool,
 ) -> Dict[str, Any]:
     """
-    Build security context for main sandbox container.
-    
-    When network policy is enabled, the main container should drop NET_ADMIN
-    capability to prevent it from modifying network configuration. Only the
-    egress sidecar should have NET_ADMIN.
-    
-    Args:
-        has_network_policy: Whether network policy is enabled for this sandbox
-        
-    Returns:
-        Dict containing security context configuration. If has_network_policy is True,
-        includes NET_ADMIN in the drop list. Otherwise, returns empty dict.
+    Security context dict for the main sandbox container.
+
+    When network policy is enabled, drops ``NET_ADMIN`` so only the egress sidecar can
+    mutate network stack state.
     """
     if not has_network_policy:
         return {}
-    
+
     return {
         "capabilities": {
             "drop": ["NET_ADMIN"],
@@ -159,7 +70,6 @@ def build_security_context_for_sandbox_container(
 
 
 def apply_egress_to_spec(
-    pod_spec: Dict[str, Any],
     containers: List[Dict[str, Any]],
     network_policy: Optional[NetworkPolicy],
     egress_image: Optional[str],
@@ -167,144 +77,30 @@ def apply_egress_to_spec(
     egress_mode: str = EGRESS_MODE_DNS,
 ) -> None:
     """
-    Apply egress sidecar configuration to Pod spec.
-    
-    This function adds the egress sidecar container to the containers list.
-    It does **not** mutate Pod ``securityContext.sysctls`` for IPv6; the sidecar
-    disables ``net.ipv6.conf.all.disable_ipv6`` via its startup command.
-    
-    Args:
-        pod_spec: Pod specification dict (will be modified in place)
-        containers: List of container dicts (will be modified in place)
-        network_policy: Optional network policy configuration
-        egress_image: Optional egress sidecar image
-        egress_mode: ``dns`` or ``dns+nft`` (default ``EGRESS_MODE_DNS``).
-
-    Example:
-        ```python
-        containers = [main_container_dict]
-        pod_spec = {"containers": containers, ...}
-        
-        apply_egress_to_spec(
-            pod_spec=pod_spec,
-            containers=containers,
-            network_policy=network_policy,
-            egress_image=egress_image,
-        )
-        ```
-        
+    Append the egress sidecar to ``containers``. IPv6 is handled in execd init
+    (``prep_execd_init_for_egress``); Pod-level sysctls are not modified.
     """
     if not network_policy or not egress_image:
         return
 
-    # Build and add egress sidecar container
-    sidecar_container = build_egress_sidecar_container(
-        egress_image=egress_image,
-        network_policy=network_policy,
-        egress_auth_token=egress_auth_token,
-        egress_mode=egress_mode,
-    )
-    containers.append(sidecar_container)
-
-
-def build_security_context_from_dict(
-    security_context_dict: Dict[str, Any],
-) -> Optional[Any]:
-    """
-    Convert security context dict to V1SecurityContext object.
-    
-    This is a helper function to convert the dict returned by
-    build_security_context_for_sandbox_container() into a Kubernetes
-    V1SecurityContext object that can be used in V1Container.
-    
-    Args:
-        security_context_dict: Security context configuration dict
-        
-    Returns:
-        V1SecurityContext object or None if dict is empty
-        
-    Example:
-        ```python
-        from kubernetes.client import V1Container
-        
-        security_context_dict = build_security_context_for_sandbox_container(True)
-        security_context = build_security_context_from_dict(security_context_dict)
-        
-        container = V1Container(
-            name="sandbox",
-            security_context=security_context,
-        )
-        ```
-    """
-    if not security_context_dict:
-        return None
-
-    from kubernetes.client import V1SecurityContext, V1Capabilities
-
-    capabilities = None
-    if "capabilities" in security_context_dict:
-        caps_dict = security_context_dict["capabilities"]
-        add_caps = caps_dict.get("add", [])
-        drop_caps = caps_dict.get("drop", [])
-        capabilities = V1Capabilities(
-            add=add_caps if add_caps else None,
-            drop=drop_caps if drop_caps else None,
-        )
-
-    privileged = security_context_dict.get("privileged")
-
-    if capabilities is None and privileged is None:
-        return None
-
-    return V1SecurityContext(
-        capabilities=capabilities,
-        privileged=privileged,
+    policy_payload = json.dumps(
+        network_policy.model_dump(by_alias=True, exclude_none=True)
     )
 
+    env: List[Dict[str, str]] = [
+        {"name": EGRESS_RULES_ENV, "value": policy_payload},
+        {"name": EGRESS_MODE_ENV, "value": egress_mode},
+    ]
+    if egress_auth_token:
+        env.append({"name": OPENSANDBOX_EGRESS_TOKEN, "value": egress_auth_token})
 
-def serialize_security_context_to_dict(
-    security_context: Optional[Any],
-) -> Optional[Dict[str, Any]]:
-    """
-    Serialize V1SecurityContext to dict format for CRD.
-    
-    This function converts a V1SecurityContext object (from V1Container)
-    into a dict format that can be used in Kubernetes CRD specifications.
-    
-    Args:
-        security_context: V1SecurityContext object or None
-        
-    Returns:
-        Dict representation of security context or None
-        
-    Example:
-        ```python
-        container_dict = {
-            "name": container.name,
-            "image": container.image,
+    containers.append(
+        {
+            "name": "egress",
+            "image": egress_image,
+            "env": env,
+            "securityContext": {
+                "capabilities": {"add": ["NET_ADMIN"]},
+            },
         }
-        
-        if container.security_context:
-            container_dict["securityContext"] = serialize_security_context_to_dict(
-                container.security_context
-            )
-        ```
-    """
-    if not security_context:
-        return None
-    
-    result: Dict[str, Any] = {}
-
-    if security_context.capabilities:
-        caps: Dict[str, Any] = {}
-        if security_context.capabilities.add:
-            caps["add"] = security_context.capabilities.add
-        if security_context.capabilities.drop:
-            caps["drop"] = security_context.capabilities.drop
-        if caps:
-            result["capabilities"] = caps
-
-    if security_context.privileged is not None:
-        result["privileged"] = security_context.privileged
-
-    return result if result else None
+    )

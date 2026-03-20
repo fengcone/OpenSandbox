@@ -540,8 +540,18 @@ class TestAgentSandboxProviderEgress:
         assert "OPENSANDBOX_EGRESS_RULES" in env_vars
         assert env_vars["OPENSANDBOX_EGRESS_MODE"] == EGRESS_MODE_DNS
 
-        assert sidecar.get("securityContext", {}).get("privileged") is True
-        assert "net.ipv6.conf.all.disable_ipv6=1" in sidecar["command"][2]
+        caps = sidecar.get("securityContext", {}).get("capabilities", {})
+        assert "NET_ADMIN" in caps.get("add", [])
+        assert sidecar.get("securityContext", {}).get("privileged") is not True
+        assert "command" not in sidecar
+
+        inits = pod_spec.get("initContainers", [])
+        assert len(inits) == 1
+        execd_init = inits[0]
+        assert execd_init["name"] == "execd-installer"
+        assert execd_init["image"] == "execd:latest"
+        assert execd_init.get("securityContext", {}).get("privileged") is True
+        assert "/proc/sys/net/ipv6/conf/all/disable_ipv6" in execd_init["args"][0]
 
     def test_create_workload_with_network_policy_persists_annotation_and_sidecar_token(self, mock_k8s_client):
         provider = AgentSandboxProvider(mock_k8s_client)
@@ -635,7 +645,10 @@ class TestAgentSandboxProviderEgress:
         assert "securityContext" not in pod_spec or "sysctls" not in pod_spec.get("securityContext", {})
 
         sidecar = next(c for c in pod_spec["containers"] if c["name"] == "egress")
-        assert sidecar["command"][2].startswith("sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1")
+        assert "command" not in sidecar
+        execd_init = pod_spec["initContainers"][0]
+        assert execd_init["name"] == "execd-installer"
+        assert "/proc/sys/net/ipv6/conf/all/disable_ipv6" in execd_init["args"][0]
 
     def test_create_workload_with_network_policy_drops_net_admin_from_main_container(self, mock_k8s_client):
         """
