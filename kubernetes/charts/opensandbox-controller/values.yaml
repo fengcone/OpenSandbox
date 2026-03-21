@@ -104,6 +104,15 @@ controller:
   # -- Priority class name for controller pods
   priorityClassName: ""
 
+  # -- Task executor image for pod reuse policy support.
+  # Required when using Pool with podRecyclePolicy: Reuse.
+  # If not configured, Reuse policy will fall back to Delete with a warning log.
+  taskExecutorImage: ""
+
+  # -- Task executor sidecar resources in format "cpu,memory".
+  # Example: "200m,128Mi". Both request and limit will be set to the same value.
+  taskExecutorResources: "200m,128Mi"
+
 # -- Image pull secrets for private registries
 imagePullSecrets: []
 # - name: myregistrykey

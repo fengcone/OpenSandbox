@@ -132,18 +132,13 @@ type ResetStatus string
 const (
 	// ResetStatusNone indicates no reset has been initiated yet.
 	// This is the initial state after task-executor starts.
-	ResetStatusNone ResetStatus = "None"
-	// ResetStatusSuccess indicates reset completed successfully.
+	ResetStatusNone    ResetStatus = "None"
 	ResetStatusSuccess ResetStatus = "Success"
-	// ResetStatusFailed indicates reset failed.
-	ResetStatusFailed ResetStatus = "Failed"
-	// ResetStatusTimeout indicates reset operation timed out.
+	ResetStatusFailed  ResetStatus = "Failed"
 	ResetStatusTimeout ResetStatus = "Timeout"
-	// ResetStatusInProgress indicates reset operation is in progress.
-	// This is returned when Reset is called while a reset is already ongoing.
+	// ResetStatusInProgress is returned when Reset is called while a reset is already ongoing.
 	ResetStatusInProgress ResetStatus = "InProgress"
-	// ResetStatusNotSupported indicates reset is not supported in current mode.
-	// Reset is only supported in sidecar mode.
+	// ResetStatusNotSupported indicates reset is not supported in current mode (sidecar mode required).
 	ResetStatusNotSupported ResetStatus = "NotSupported"
 )
 

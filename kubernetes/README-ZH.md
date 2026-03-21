@@ -30,6 +30,94 @@ Pool 自定义资源维护一个预热的计算资源池，以实现快速沙箱
 - 基于需求的自动资源分配和释放
 - 实时状态监控，显示总数、已分配和可用资源
 
+### Pod 回收策略
+
+Pool CRD 支持可配置的 Pod 回收策略，用于确定 BatchSandbox 删除时如何处理 Pod：
+
+#### 策略类型
+
+| 策略 | 描述 |
+|------|------|
+| `Delete`（默认） | BatchSandbox 删除时直接删除 Pod |
+| `Reuse` | 重置 Pod 后归还资源池以供复用 |
+
+#### Reuse 策略的重要行为变更
+
+使用 `podRecyclePolicy: Reuse` 时，控制器会自动对 Pod 规格进行以下修改：
+
+| 变更 | 原因 |
+|------|------|
+| `restartPolicy` 从 `Never` 改为 `Always` | 重置时需要重启容器 |
+| `shareProcessNamespace` 设置为 `true` | Sidecar 通信所需 |
+| 添加 `SYS_PTRACE` capability | nsenter 访问容器命名空间所需 |
+| 注入 `task-executor` sidecar | 处理 Pod 重置操作 |
+| 添加 `sandbox-storage` volume | 主容器与 sidecar 的共享存储 |
+
+#### Reuse 策略的前置条件
+
+使用 `Reuse` 策略时，**必须**在部署控制器时配置 `task-executor-image` 参数：
+
+```sh
+# 使用 Helm
+helm install opensandbox-controller ./charts/opensandbox-controller \
+  --set controller.taskExecutorImage=<registry>/opensandbox-task-executor:<tag> \
+  --namespace opensandbox-system
+
+# 使用 Kustomize
+make deploy CONTROLLER_IMG=<registry>/opensandbox-controller:<tag> \
+  TASK_EXECUTOR_IMG=<registry>/opensandbox-task-executor:<tag>
+```
+
+> **注意**：如果未配置 `task-executor-image`，`Reuse` 策略将降级为 `Delete` 并输出警告日志。
+
+#### 配置示例
+
+```yaml
+apiVersion: sandbox.opensandbox.io/v1alpha1
+kind: Pool
+metadata:
+  name: reuse-pool
+spec:
+  podRecyclePolicy: Reuse  # 启用 Pod 复用
+  resetSpec:
+    mainContainerName: sandbox-container  # 可选：默认为第一个容器
+    cleanDirectories:                     # 可选：重置时清理的目录
+      - "/tmp/*"
+      - "/var/cache/**"
+    timeoutSeconds: 60                    # 可选：10-600 秒，默认 60
+  template:
+    spec:
+      containers:
+      - name: sandbox-container
+        image: ubuntu:latest
+        command: ["sleep", "3600"]
+  capacitySpec:
+    bufferMax: 10
+    bufferMin: 2
+    poolMax: 20
+    poolMin: 5
+```
+
+#### 重置工作流程
+
+当使用 `Reuse` 策略的 BatchSandbox 被删除时：
+
+1. **停止任务**：停止 Pod 中所有正在运行的任务
+2. **清理目录**：清理指定的目录（支持 glob 模式）
+3. **重启主容器**：通过 SIGTERM/SIGKILL 重启主容器
+4. **归还资源池**：Pod 被归还到资源池以供复用
+
+#### 资源池状态
+
+资源池状态包含 `resetting` 字段，用于追踪正在重置的 Pod：
+
+```sh
+kubectl get pool reuse-pool
+
+NAME          TOTAL   ALLOCATED   AVAILABLE   RESETTING   AGE
+reuse-pool    10      3           5           2           5m
+```
+
 ### 任务编排
 集成的任务管理系统，在沙箱内执行自定义工作负载：
 - **可选执行**：任务调度完全可选 - 可以在不带任务的情况下创建沙箱

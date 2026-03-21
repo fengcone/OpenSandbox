@@ -80,6 +80,8 @@ kubectl delete crd pools.sandbox.opensandbox.io
 | `controller.podLabels` | Additional labels for controller pods | `{}` |
 | `controller.podAnnotations` | Additional annotations for controller pods | `{}` |
 | `controller.priorityClassName` | Priority class name for controller pods | `""` |
+| `controller.taskExecutorImage` | Task executor image for pod reuse policy (required for Reuse policy) | `""` |
+| `controller.taskExecutorResources` | Task executor sidecar resources in format "cpu,memory" | `200m,128Mi` |
 
 ### RBAC Parameters
 
@@ -148,6 +150,20 @@ controller:
 imagePullSecrets:
   - name: myregistrykey
 ```
+
+### Enable Pod Reuse Policy
+
+To use the `Reuse` pod recycle policy, you must configure the task-executor image:
+
+```yaml
+controller:
+  taskExecutorImage: myregistry.example.com/opensandbox-task-executor:v0.1.0
+  taskExecutorResources: 200m,128Mi  # Optional: defaults to "200m,128Mi"
+```
+
+> **Note**: Without `taskExecutorImage` configured, pools with `podRecyclePolicy: Reuse` will fall back to `Delete` behavior.
+
+See [Pod Recycle Policy](../README.md#pod-recycle-policy) for more details.
 
 ### Node Affinity
 

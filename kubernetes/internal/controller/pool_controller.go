@@ -517,21 +517,20 @@ func (r *PoolReconciler) createPoolPod(ctx context.Context, pool *sandboxv1alpha
 	return nil
 }
 
-// injectTaskExecutor injects task-executor sidecar into the pod for reset support
+// injectTaskExecutor injects task-executor sidecar into the pod for reset support.
 func (r *PoolReconciler) injectTaskExecutor(pod *corev1.Pod, pool *sandboxv1alpha1.Pool) {
 	// Enable process namespace sharing for sidecar communication
 	shareProcessNamespace := true
 	pod.Spec.ShareProcessNamespace = &shareProcessNamespace
 
-	// Ensure restartPolicy allows container restart for Reuse policy
-	// If restartPolicy is Never, the container won't restart after SIGTERM
+	// Ensure restartPolicy allows container restart for Reuse policy.
+	// If restartPolicy is Never, the container won't restart after SIGTERM.
 	if pod.Spec.RestartPolicy == corev1.RestartPolicyNever {
 		klog.InfoS("Changing restartPolicy from Never to Always for Reuse policy support",
 			"pod", pod.Name, "pool", pool.Name)
 		pod.Spec.RestartPolicy = corev1.RestartPolicyAlways
 	}
 
-	// Get main container name
 	mainContainerName := r.getMainContainerName(pool, pod)
 
 	// Add sandbox-storage volume to pod spec (used by both main container and task-executor)
@@ -542,7 +541,6 @@ func (r *PoolReconciler) injectTaskExecutor(pod *corev1.Pod, pool *sandboxv1alph
 		},
 	})
 
-	// Add sandbox-storage volumeMount and env to main container
 	for i := range pod.Spec.Containers {
 		if pod.Spec.Containers[i].Name == mainContainerName {
 			pod.Spec.Containers[i].Env = append(pod.Spec.Containers[i].Env,
@@ -559,10 +557,8 @@ func (r *PoolReconciler) injectTaskExecutor(pod *corev1.Pod, pool *sandboxv1alph
 		}
 	}
 
-	// Parse task-executor resources from config
 	cpu, memory := r.parseTaskExecutorResources()
 
-	// Inject task-executor sidecar
 	taskExecutorContainer := corev1.Container{
 		Name:            "task-executor",
 		Image:           r.TaskExecutorImage,
@@ -631,13 +627,10 @@ func (r *PoolReconciler) parseTaskExecutorResources() (cpu, memory string) {
 	return cpu, memory
 }
 
-// getMainContainerName returns the main container name for reset purposes
 func (r *PoolReconciler) getMainContainerName(pool *sandboxv1alpha1.Pool, pod *corev1.Pod) string {
-	// Use explicitly configured main container name
 	if pool.Spec.ResetSpec != nil && pool.Spec.ResetSpec.MainContainerName != "" {
 		return pool.Spec.ResetSpec.MainContainerName
 	}
-	// Default to first container
 	if len(pod.Spec.Containers) > 0 {
 		return pod.Spec.Containers[0].Name
 	}

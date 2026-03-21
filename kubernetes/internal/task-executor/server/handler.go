@@ -41,7 +41,6 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
-// resetState tracks the state of a reset operation in memory
 type resetState struct {
 	mu        sync.Mutex
 	status    api.ResetStatus
@@ -52,9 +51,9 @@ type resetState struct {
 
 type Handler struct {
 	manager  manager.TaskManager
-	executor runtime.Executor // Direct reference for reset operations
+	executor runtime.Executor
 	config   *config.Config
-	reset    *resetState // Reset state tracking (in-memory)
+	reset    *resetState
 }
 
 func NewHandler(mgr manager.TaskManager, exec runtime.Executor, cfg *config.Config) *Handler {
@@ -69,14 +68,12 @@ func NewHandler(mgr manager.TaskManager, exec runtime.Executor, cfg *config.Conf
 		executor: exec,
 		config:   cfg,
 		reset: &resetState{
-			status: api.ResetStatusNone, // Initial state: no reset has been initiated
+			status: api.ResetStatusNone,
 		},
 	}
 	return h
 }
 
-// isResetting checks if a reset operation is in progress.
-// During reset, new task creation is blocked to prevent race conditions.
 func (h *Handler) isResetting() bool {
 	h.reset.mu.Lock()
 	defer h.reset.mu.Unlock()
@@ -230,9 +227,7 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 }
 
 // Reset handles the reset operation for pod recycling.
-// This is a non-blocking operation - it returns immediately with the current status.
-// If a reset is already in progress, it returns the current status.
-// If no reset is in progress, it starts a new reset in a goroutine.
+// It returns immediately with the current status. If no reset is in progress, it starts a new one in a goroutine.
 func (h *Handler) Reset(w http.ResponseWriter, r *http.Request) {
 	if h.manager == nil {
 		writeError(w, http.StatusInternalServerError, "task manager not initialized")
@@ -245,7 +240,6 @@ func (h *Handler) Reset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if running in sidecar mode
 	if !h.config.EnableSidecarMode {
 		klog.ErrorS(nil, "Reset is only supported in sidecar mode")
 		writeJSON(w, http.StatusOK, &api.ResetResponse{
@@ -266,9 +260,7 @@ func (h *Handler) Reset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Case 2: Reset already completed (Success/Failed/Timeout) -> return terminal status
-	// Callers (pollResetStatus) must read the terminal status and act accordingly.
-	// Only allow re-trigger if status is None (initial state).
+	// Case 2: Reset already completed -> return terminal status
 	if h.reset.status == api.ResetStatusSuccess ||
 		h.reset.status == api.ResetStatusFailed ||
 		h.reset.status == api.ResetStatusTimeout ||
@@ -280,28 +272,23 @@ func (h *Handler) Reset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Case 3: Start a new reset (only when status is None)
+	// Case 3: Start a new reset
 	h.reset.status = api.ResetStatusInProgress
 	h.reset.startTime = time.Now()
 	h.reset.message = "Reset started"
 	h.reset.details = &api.ResetDetails{}
 
-	// Build response before releasing lock
 	resp := h.currentResetResponse()
 
 	klog.InfoS("Starting reset operation", "mainContainer", req.MainContainerName)
 
-	// Release lock before starting goroutine to avoid blocking
 	h.reset.mu.Unlock()
 
-	// Start reset in background goroutine
 	go h.executeReset(req)
 
-	// Return immediately with InProgress status
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// currentResetResponse builds the current reset response
 func (h *Handler) currentResetResponse() *api.ResetResponse {
 	return &api.ResetResponse{
 		Status:  h.reset.status,
@@ -310,7 +297,6 @@ func (h *Handler) currentResetResponse() *api.ResetResponse {
 	}
 }
 
-// executeReset performs the actual reset operation in a background goroutine
 func (h *Handler) executeReset(req api.ResetRequest) {
 	defer func() {
 		if err := recover(); err != nil {
@@ -324,10 +310,9 @@ func (h *Handler) executeReset(req api.ResetRequest) {
 		}
 	}()
 
-	// Create context with timeout from request
 	timeout := time.Duration(req.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
-		timeout = 60 * time.Second // Default timeout
+		timeout = 60 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -345,7 +330,7 @@ func (h *Handler) executeReset(req api.ResetRequest) {
 	h.reset.mu.Unlock()
 	klog.InfoS("Stopped tasks during reset", "count", stopped)
 
-	// Step 2: Clean task data directory (always clean)
+	// Step 2: Clean task data directory
 	if err := h.cleanTaskDataDir(); err != nil {
 		h.setResetFailed(fmt.Sprintf("failed to clean task data dir: %v", err))
 		return
@@ -386,7 +371,6 @@ func (h *Handler) executeReset(req api.ResetRequest) {
 		return
 	}
 
-	// Success
 	h.reset.mu.Lock()
 	h.reset.status = api.ResetStatusSuccess
 	h.reset.message = "Reset completed successfully"
@@ -395,7 +379,6 @@ func (h *Handler) executeReset(req api.ResetRequest) {
 	klog.InfoS("Reset operation completed successfully")
 }
 
-// setResetStatus sets the reset status with given status and message
 func (h *Handler) setResetStatus(status api.ResetStatus, message string) {
 	h.reset.mu.Lock()
 	h.reset.status = status
@@ -406,12 +389,10 @@ func (h *Handler) setResetStatus(status api.ResetStatus, message string) {
 	}
 }
 
-// setResetFailed sets the reset status to failed
 func (h *Handler) setResetFailed(message string) {
 	h.setResetStatus(api.ResetStatusFailed, message)
 }
 
-// cleanTaskDataDir cleans all task data directories
 func (h *Handler) cleanTaskDataDir() error {
 	if h.config.DataDir == "" {
 		return nil
@@ -439,7 +420,6 @@ func (h *Handler) cleanTaskDataDir() error {
 	return nil
 }
 
-// cleanDirectories cleans the specified directories using glob patterns
 func (h *Handler) cleanDirectories(dirs []string) ([]string, error) {
 	var cleaned []string
 	for _, dir := range dirs {
@@ -461,7 +441,6 @@ func (h *Handler) cleanDirectories(dirs []string) ([]string, error) {
 	return cleaned, nil
 }
 
-// writeJSON writes a JSON response with the given status code
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

@@ -71,7 +71,6 @@ type PodRecyclePolicy string
 
 const (
 	// PodRecyclePolicyDelete deletes the allocated Pod directly.
-	// This is the default behavior.
 	PodRecyclePolicyDelete PodRecyclePolicy = "Delete"
 	// PodRecyclePolicyReuse resets the Pod before returning it to the pool.
 	// Requires task-executor image to be configured in controller.

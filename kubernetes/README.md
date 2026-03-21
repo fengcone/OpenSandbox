@@ -30,6 +30,94 @@ The Pool custom resource maintains a pool of pre-warmed compute resources to ena
 - Automatic resource allocation and deallocation based on demand
 - Real-time status monitoring showing total, allocated, and available resources
 
+### Pod Recycle Policy
+
+The Pool CRD supports configurable pod recycle policies that determine how pods are handled when a BatchSandbox is deleted:
+
+#### Policy Types
+
+| Policy | Description |
+|--------|-------------|
+| `Delete` (default) | Delete the pod directly when BatchSandbox is deleted |
+| `Reuse` | Reset the pod and return it to the pool for reuse |
+
+#### Important Behavioral Changes for Reuse Policy
+
+When using `podRecyclePolicy: Reuse`, the controller automatically makes the following changes to pod specs:
+
+| Change | Reason |
+|--------|--------|
+| `restartPolicy` changed from `Never` to `Always` | Required for container restart during reset |
+| `shareProcessNamespace` set to `true` | Required for sidecar communication |
+| `SYS_PTRACE` capability added | Required for nsenter to access container namespaces |
+| `task-executor` sidecar injected | Handles pod reset operations |
+| `sandbox-storage` volume added | Shared storage between main container and sidecar |
+
+#### Prerequisites for Reuse Policy
+
+To use the `Reuse` policy, you **must** configure the `task-executor-image` parameter when deploying the controller:
+
+```sh
+# Using Helm
+helm install opensandbox-controller ./charts/opensandbox-controller \
+  --set controller.taskExecutorImage=<registry>/opensandbox-task-executor:<tag> \
+  --namespace opensandbox-system
+
+# Using Kustomize
+make deploy CONTROLLER_IMG=<registry>/opensandbox-controller:<tag> \
+  TASK_EXECUTOR_IMG=<registry>/opensandbox-task-executor:<tag>
+```
+
+> **Note**: If `task-executor-image` is not configured, the `Reuse` policy will fall back to `Delete` with a warning log.
+
+#### Configuration Example
+
+```yaml
+apiVersion: sandbox.opensandbox.io/v1alpha1
+kind: Pool
+metadata:
+  name: reuse-pool
+spec:
+  podRecyclePolicy: Reuse  # Enable pod reuse
+  resetSpec:
+    mainContainerName: sandbox-container  # Optional: defaults to first container
+    cleanDirectories:                     # Optional: directories to clean during reset
+      - "/tmp/*"
+      - "/var/cache/**"
+    timeoutSeconds: 60                    # Optional: 10-600 seconds, default 60
+  template:
+    spec:
+      containers:
+      - name: sandbox-container
+        image: ubuntu:latest
+        command: ["sleep", "3600"]
+  capacitySpec:
+    bufferMax: 10
+    bufferMin: 2
+    poolMax: 20
+    poolMin: 5
+```
+
+#### How Reset Works
+
+When a BatchSandbox with `Reuse` policy is deleted:
+
+1. **Stop Tasks**: All running tasks in the pod are stopped
+2. **Clean Directories**: Specified directories are cleaned (supports glob patterns)
+3. **Restart Main Container**: The main container is restarted via SIGTERM/SIGKILL
+4. **Return to Pool**: The pod is returned to the pool for reuse
+
+#### Pool Status with Reset
+
+The Pool status includes a `resetting` field to track pods being reset:
+
+```sh
+kubectl get pool reuse-pool
+
+NAME          TOTAL   ALLOCATED   AVAILABLE   RESETTING   AGE
+reuse-pool    10      3           5           2           5m
+```
+
 ### Task Orchestration
 Integrated task management system that executes custom workloads within sandboxes:
 - **Optional Execution**: Task scheduling is completely optional - sandboxes can be created without tasks
