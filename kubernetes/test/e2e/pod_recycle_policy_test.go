@@ -292,7 +292,7 @@ var _ = Describe("PodRecyclePolicy", Ordered, func() {
 				g.Expect(shareNs).To(Equal("true"), "Pool pod should have shareProcessNamespace=true for nsenter support")
 			}, 30*time.Second).Should(Succeed())
 
-			By("verifying task-executor container has SYS_PTRACE capability")
+			By("verifying task-executor container has SYS_PTRACE and SYS_ADMIN capabilities")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace,
 					"-l", fmt.Sprintf("sandbox.opensandbox.io/pool-name=%s", poolName),
@@ -300,6 +300,7 @@ var _ = Describe("PodRecyclePolicy", Ordered, func() {
 				caps, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(caps).To(ContainSubstring("SYS_PTRACE"), "task-executor container should have SYS_PTRACE capability")
+				g.Expect(caps).To(ContainSubstring("SYS_ADMIN"), "task-executor container should have SYS_ADMIN capability for nsenter")
 			}, 30*time.Second).Should(Succeed())
 
 			By("recording initial pool total")
@@ -631,3 +632,261 @@ func getNonEmptyLines(s string) []string {
 	}
 	return lines
 }
+
+// ============================================================
+// Case 3: Directory Cleanup Verification
+// Tests that cleanDirectories is executed in the main container's namespace
+// ============================================================
+
+var _ = Describe("PodRecyclePolicy - Directory Cleanup", Ordered, func() {
+	const testNamespace = "default"
+
+	BeforeAll(func() {
+		By("waiting for controller to be ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Running"))
+		}, 2*time.Minute).Should(Succeed())
+	})
+
+	SetDefaultEventuallyTimeout(2 * time.Minute)
+	SetDefaultEventuallyPollingInterval(time.Second)
+
+	Context("Clean directories in main container namespace", func() {
+		It("should clean directories in main container's mount namespace during reset", func() {
+			const poolName = "test-pool-clean-dirs"
+			const batchSandboxName = "test-bs-clean-dirs"
+
+			By("creating a Pool with Reuse policy and cleanDirectories config")
+			poolYAML, err := renderTemplate("testdata/pool-reuse-clean-dirs.yaml", map[string]interface{}{
+				"PoolName":          poolName,
+				"Namespace":         testNamespace,
+				"TaskExecutorImage": utils.TaskExecutorImage,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			poolFile := filepath.Join("/tmp", "test-pool-clean-dirs.yaml")
+			err = os.WriteFile(poolFile, []byte(poolYAML), 0644)
+			Expect(err).NotTo(HaveOccurred())
+			defer os.Remove(poolFile)
+
+			cmd := exec.Command("kubectl", "apply", "-f", poolFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create Pool")
+
+			By("waiting for Pool to be ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pool", poolName, "-n", testNamespace,
+					"-o", "jsonpath={.status.total}")
+				totalStr, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(totalStr).NotTo(BeEmpty())
+			}, 2*time.Minute).Should(Succeed())
+
+			By("creating a BatchSandbox using the pool")
+			bsYAML, err := renderTemplate("testdata/batchsandbox-pooled-no-expire.yaml", map[string]interface{}{
+				"BatchSandboxName": batchSandboxName,
+				"Namespace":        testNamespace,
+				"Replicas":         1,
+				"PoolName":         poolName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			bsFile := filepath.Join("/tmp", "test-bs-clean-dirs.yaml")
+			err = os.WriteFile(bsFile, []byte(bsYAML), 0644)
+			Expect(err).NotTo(HaveOccurred())
+			defer os.Remove(bsFile)
+
+			cmd = exec.Command("kubectl", "apply", "-f", bsFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("getting the allocated pod name")
+			var podName string
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "batchsandbox", batchSandboxName, "-n", testNamespace,
+					"-o", "jsonpath={.metadata.annotations.sandbox\\.opensandbox\\.io/alloc-status}")
+				allocStatusJSON, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(allocStatusJSON).NotTo(BeEmpty())
+
+				var allocStatus struct {
+					Pods []string `json:"pods"`
+				}
+				err = json.Unmarshal([]byte(allocStatusJSON), &allocStatus)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(len(allocStatus.Pods)).To(BeNumerically(">", 0))
+				podName = allocStatus.Pods[0]
+			}, 2*time.Minute).Should(Succeed())
+
+			By("creating test directories in the main container's /data volume (persists across container restart)")
+			// Use /data which is an emptyDir volume, so files persist across container restart
+			testDir := "/data/test-reset-dir"
+
+			cmd = exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "sandbox-container",
+				"--", "/bin/sh", "-c",
+				fmt.Sprintf("mkdir -p %s && echo 'dir-content' > %s/file.txt", testDir, testDir))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create test directory in main container")
+
+			By("verifying test directory exists before reset")
+			cmd = exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "sandbox-container",
+				"--", "ls", testDir)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Test directory should exist before reset")
+
+			By("deleting the BatchSandbox to trigger reset")
+			cmd = exec.Command("kubectl", "delete", "batchsandbox", batchSandboxName, "-n", testNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying pod still exists (returned to pool after reset)")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", podName, "-n", testNamespace,
+					"-o", "jsonpath={.status.phase}")
+				phase, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Pod should still exist after reset")
+				g.Expect(phase).To(Equal("Running"), "Pod should be Running after reset")
+			}, 2*time.Minute).Should(Succeed())
+
+			By("verifying test directory was cleaned during reset (in main container namespace)")
+			// The test directory should be cleaned because cleanDirectories includes "/data/test-reset-*"
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "sandbox-container",
+					"--", "/bin/sh", "-c", fmt.Sprintf("ls %s 2>&1 || echo 'NOT_FOUND'", testDir))
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// The directory should have been removed
+				g.Expect(output).To(ContainSubstring("NOT_FOUND"), "Test directory %s should be cleaned during reset", testDir)
+			}, 30*time.Second).Should(Succeed())
+
+			By("cleaning up the Pool")
+			cmd = exec.Command("kubectl", "delete", "pool", poolName, "-n", testNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should clean glob pattern matched directories during reset", func() {
+			const poolName = "test-pool-clean-glob"
+			const batchSandboxName = "test-bs-clean-glob"
+
+			By("creating a Pool with Reuse policy and glob pattern cleanDirectories")
+			poolYAML, err := renderTemplate("testdata/pool-reuse-clean-dirs.yaml", map[string]interface{}{
+				"PoolName":          poolName,
+				"Namespace":         testNamespace,
+				"TaskExecutorImage": utils.TaskExecutorImage,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			poolFile := filepath.Join("/tmp", "test-pool-clean-glob.yaml")
+			err = os.WriteFile(poolFile, []byte(poolYAML), 0644)
+			Expect(err).NotTo(HaveOccurred())
+			defer os.Remove(poolFile)
+
+			cmd := exec.Command("kubectl", "apply", "-f", poolFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create Pool")
+
+			By("waiting for Pool to be ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pool", poolName, "-n", testNamespace,
+					"-o", "jsonpath={.status.total}")
+				totalStr, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(totalStr).NotTo(BeEmpty())
+			}, 2*time.Minute).Should(Succeed())
+
+			By("creating a BatchSandbox using the pool")
+			bsYAML, err := renderTemplate("testdata/batchsandbox-pooled-no-expire.yaml", map[string]interface{}{
+				"BatchSandboxName": batchSandboxName,
+				"Namespace":        testNamespace,
+				"Replicas":         1,
+				"PoolName":         poolName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			bsFile := filepath.Join("/tmp", "test-bs-clean-glob.yaml")
+			err = os.WriteFile(bsFile, []byte(bsYAML), 0644)
+			Expect(err).NotTo(HaveOccurred())
+			defer os.Remove(bsFile)
+
+			cmd = exec.Command("kubectl", "apply", "-f", bsFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("getting the allocated pod name")
+			var podName string
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "batchsandbox", batchSandboxName, "-n", testNamespace,
+					"-o", "jsonpath={.metadata.annotations.sandbox\\.opensandbox\\.io/alloc-status}")
+				allocStatusJSON, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(allocStatusJSON).NotTo(BeEmpty())
+
+				var allocStatus struct {
+					Pods []string `json:"pods"`
+				}
+				err = json.Unmarshal([]byte(allocStatusJSON), &allocStatus)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(len(allocStatus.Pods)).To(BeNumerically(">", 0))
+				podName = allocStatus.Pods[0]
+			}, 2*time.Minute).Should(Succeed())
+
+			By("creating multiple test directories matching glob pattern in /data volume")
+			// Create directories in /data (emptyDir volume) that match the glob pattern "/data/test-reset-*"
+			testDirs := []string{"/data/test-reset-aaa", "/data/test-reset-bbb", "/data/test-reset-ccc"}
+			for _, dir := range testDirs {
+				cmd = exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "sandbox-container",
+					"--", "/bin/sh", "-c", fmt.Sprintf("mkdir -p %s && echo 'content' > %s/file.txt", dir, dir))
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred(), "Failed to create test directory %s", dir)
+			}
+
+			By("creating a directory that does NOT match the glob pattern (should remain)")
+			nonMatchingDir := "/data/other-directory"
+			cmd = exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "sandbox-container",
+				"--", "/bin/sh", "-c", fmt.Sprintf("mkdir -p %s && echo 'content' > %s/file.txt", nonMatchingDir, nonMatchingDir))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create non-matching test directory")
+
+			By("deleting the BatchSandbox to trigger reset")
+			cmd = exec.Command("kubectl", "delete", "batchsandbox", batchSandboxName, "-n", testNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying pod still exists (returned to pool after reset)")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", podName, "-n", testNamespace,
+					"-o", "jsonpath={.status.phase}")
+				phase, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Pod should still exist after reset")
+				g.Expect(phase).To(Equal("Running"), "Pod should be Running after reset")
+			}, 2*time.Minute).Should(Succeed())
+
+			By("verifying glob-matched directories were cleaned")
+			for _, dir := range testDirs {
+				Eventually(func(g Gomega) {
+					cmd := exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "sandbox-container",
+						"--", "/bin/sh", "-c", fmt.Sprintf("ls %s 2>&1 || echo 'NOT_FOUND'", dir))
+					output, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).To(ContainSubstring("NOT_FOUND"), "Directory %s matching glob pattern should be cleaned", dir)
+				}, 30*time.Second).Should(Succeed())
+			}
+
+			By("verifying non-matching directory still exists (was not cleaned)")
+			cmd = exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "sandbox-container",
+				"--", "ls", nonMatchingDir)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Non-matching directory should still exist after reset")
+
+			By("cleaning up the Pool")
+			cmd = exec.Command("kubectl", "delete", "pool", poolName, "-n", testNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+})

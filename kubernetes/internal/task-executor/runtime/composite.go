@@ -99,3 +99,13 @@ func (e *compositeExecutor) RestartMainContainer(ctx context.Context, mainContai
 	}
 	return e.processExec.RestartMainContainer(ctx, mainContainerName)
 }
+
+// CleanDirectories cleans directories using the process executor.
+// In sidecar mode, it uses nsenter to enter the main container's mount namespace.
+func (e *compositeExecutor) CleanDirectories(ctx context.Context, dirs []string, mainContainerName string) ([]string, error) {
+	// Clean is only supported by process executor
+	if e.processExec == nil {
+		return nil, fmt.Errorf("process executor not available for clean directories")
+	}
+	return e.processExec.CleanDirectories(ctx, dirs, mainContainerName)
+}

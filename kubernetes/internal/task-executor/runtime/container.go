@@ -58,3 +58,8 @@ func (e *containerExecutor) Stop(ctx context.Context, task *types.Task) error {
 func (e *containerExecutor) RestartMainContainer(ctx context.Context, mainContainerName string) error {
 	return errors.New("container mode is not implemented yet - use process mode instead")
 }
+
+// CleanDirectories is not implemented for container mode yet.
+func (e *containerExecutor) CleanDirectories(ctx context.Context, dirs []string, mainContainerName string) ([]string, error) {
+	return nil, errors.New("container mode is not implemented yet - use process mode instead")
+}

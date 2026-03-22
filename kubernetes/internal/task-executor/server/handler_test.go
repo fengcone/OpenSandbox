@@ -134,6 +134,10 @@ func (e *MockExecutor) RestartMainContainer(ctx context.Context, mainContainerNa
 	return nil
 }
 
+func (e *MockExecutor) CleanDirectories(ctx context.Context, dirs []string, mainContainerName string) ([]string, error) {
+	return dirs, nil
+}
+
 func TestHandler_Health(t *testing.T) {
 	cfg := &config.Config{}
 	h := NewHandler(NewMockTaskManager(), &MockExecutor{}, cfg)

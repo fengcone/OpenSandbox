@@ -361,7 +361,15 @@ func (h *Handler) executeReset(req api.ResetRequest) {
 
 	// Step 3: Clean user-specified directories
 	if len(req.CleanDirectories) > 0 {
-		cleaned, err := h.cleanDirectories(req.CleanDirectories)
+		mainContainer := req.MainContainerName
+		if mainContainer == "" {
+			mainContainer = h.config.MainContainerName
+		}
+		if h.executor == nil {
+			h.setResetFailed("executor is nil, cannot clean directories")
+			return
+		}
+		cleaned, err := h.executor.CleanDirectories(ctx, req.CleanDirectories, mainContainer)
 		if err != nil {
 			h.setResetFailed(fmt.Sprintf("failed to clean directories: %v", err))
 			return
@@ -441,27 +449,6 @@ func (h *Handler) cleanTaskDataDir() error {
 		}
 	}
 	return nil
-}
-
-func (h *Handler) cleanDirectories(dirs []string) ([]string, error) {
-	var cleaned []string
-	for _, dir := range dirs {
-		matches, err := filepath.Glob(dir)
-		if err != nil {
-			klog.ErrorS(err, "Invalid glob pattern", "pattern", dir)
-			continue
-		}
-
-		for _, match := range matches {
-			if err := os.RemoveAll(match); err != nil {
-				klog.ErrorS(err, "Failed to clean directory", "path", match)
-				continue
-			}
-			cleaned = append(cleaned, match)
-			klog.InfoS("Cleaned directory", "path", match)
-		}
-	}
-	return cleaned, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {

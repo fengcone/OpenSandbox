@@ -558,3 +558,135 @@ func (e *processExecutor) waitForNewContainer(ctx context.Context, oldPID int, m
 
 	return fmt.Errorf("timeout waiting for new main container to start after %v", startTimeout)
 }
+
+// CleanDirectories cleans the specified directories.
+// In sidecar mode, it uses nsenter to enter the main container's mount namespace.
+// Returns the list of directories that were successfully cleaned.
+func (e *processExecutor) CleanDirectories(ctx context.Context, dirs []string, mainContainerName string) ([]string, error) {
+	if len(dirs) == 0 {
+		return nil, nil
+	}
+
+	// In sidecar mode, we need to use nsenter to enter the main container's mount namespace
+	if e.config.EnableSidecarMode {
+		return e.cleanDirectoriesInNamespace(ctx, dirs, mainContainerName)
+	}
+
+	// In host mode, clean directly
+	return e.cleanDirectoriesHost(dirs)
+}
+
+// cleanDirectoriesInNamespace cleans directories using nsenter to enter the main container's mount namespace.
+// This is necessary in sidecar mode because the task-executor container has its own mount namespace
+// separate from the main container's filesystem.
+func (e *processExecutor) cleanDirectoriesInNamespace(ctx context.Context, dirs []string, mainContainerName string) ([]string, error) {
+	// Find the main container PID
+	targetPID, err := e.findPidByEnvVar("SANDBOX_MAIN_CONTAINER", mainContainerName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find main container PID: %w", err)
+	}
+
+	klog.InfoS("Cleaning directories in main container namespace", "targetPID", targetPID, "dirs", dirs)
+
+	var cleanedDirs []string
+
+	for _, dir := range dirs {
+		// Expand glob patterns using nsenter
+		matches, err := e.globInNamespace(targetPID, dir)
+		if err != nil {
+			klog.ErrorS(err, "Failed to glob in namespace", "pattern", dir)
+			continue
+		}
+
+		for _, match := range matches {
+			// Remove the directory using nsenter
+			if err := e.removeInNamespace(ctx, targetPID, match); err != nil {
+				klog.ErrorS(err, "Failed to remove directory in namespace", "path", match)
+				continue
+			}
+			cleanedDirs = append(cleanedDirs, match)
+			klog.InfoS("Cleaned directory in main container namespace", "path", match)
+		}
+	}
+
+	return cleanedDirs, nil
+}
+
+// globInNamespace expands glob patterns in the main container's namespace.
+// It uses nsenter to execute ls with the glob pattern and returns matching paths.
+func (e *processExecutor) globInNamespace(targetPID int, pattern string) ([]string, error) {
+	// Build command to expand glob pattern
+	// Note: We don't escape the pattern because we want shell to expand glob patterns
+	// The pattern is already validated/sanitized by the caller
+	lsCmd := fmt.Sprintf("ls -d %s 2>/dev/null || true", pattern)
+
+	nsenterArgs := []string{
+		"-t", strconv.Itoa(targetPID),
+		"--mount",
+		"--",
+		"/bin/sh", "-c", lsCmd,
+	}
+
+	cmd := exec.Command("nsenter", nsenterArgs...)
+	output, err := cmd.Output()
+	if err != nil {
+		// If the command fails (e.g., no matches), return empty slice
+		return nil, nil
+	}
+
+	// Parse output - each line is a matched path
+	var matches []string
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			matches = append(matches, line)
+		}
+	}
+
+	return matches, nil
+}
+
+// removeInNamespace removes a file or directory using nsenter to enter the main container's mount namespace.
+func (e *processExecutor) removeInNamespace(ctx context.Context, targetPID int, path string) error {
+	// Build rm -rf command with proper escaping
+	rmCmd := fmt.Sprintf("rm -rf %s", shellEscapePath(path))
+
+	nsenterArgs := []string{
+		"-t", strconv.Itoa(targetPID),
+		"--mount",
+		"--",
+		"/bin/sh", "-c", rmCmd,
+	}
+
+	cmd := exec.CommandContext(ctx, "nsenter", nsenterArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to remove %s: %w, output: %s", path, err, string(output))
+	}
+
+	return nil
+}
+
+// cleanDirectoriesHost cleans directories directly in host mode.
+func (e *processExecutor) cleanDirectoriesHost(dirs []string) ([]string, error) {
+	var cleanedDirs []string
+
+	for _, dir := range dirs {
+		matches, err := filepath.Glob(dir)
+		if err != nil {
+			klog.ErrorS(err, "Invalid glob pattern", "pattern", dir)
+			continue
+		}
+
+		for _, match := range matches {
+			if err := os.RemoveAll(match); err != nil {
+				klog.ErrorS(err, "Failed to clean directory", "path", match)
+				continue
+			}
+			cleanedDirs = append(cleanedDirs, match)
+			klog.InfoS("Cleaned directory", "path", match)
+		}
+	}
+
+	return cleanedDirs, nil
+}

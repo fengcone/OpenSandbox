@@ -572,6 +572,7 @@ func (r *PoolReconciler) injectTaskExecutor(pod *corev1.Pod, pool *sandboxv1alph
 			Capabilities: &corev1.Capabilities{
 				Add: []corev1.Capability{
 					"SYS_PTRACE", // Required for nsenter to access other process namespaces
+					"SYS_ADMIN",  // Required for nsenter to enter mount namespace
 				},
 			},
 		},

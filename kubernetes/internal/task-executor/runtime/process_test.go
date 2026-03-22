@@ -576,3 +576,62 @@ func TestFindPidByEnvVar(t *testing.T) {
 	_, err = pExecutor.findPidByEnvVar("NON_EXISTENT_VAR", "nonexistent")
 	assert.Error(t, err, "Should return error for non-existent env var")
 }
+
+// TestCleanDirectories_HostMode tests CleanDirectories in host mode (non-sidecar).
+func TestCleanDirectories_HostMode(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not found")
+	}
+
+	executor, _ := setupTestExecutor(t)
+	ctx := context.Background()
+
+	// Create test directories
+	testBaseDir := t.TempDir()
+	testDir1 := filepath.Join(testBaseDir, "test-dir-1")
+	testDir2 := filepath.Join(testBaseDir, "test-dir-2")
+	testDir3 := filepath.Join(testBaseDir, "other-dir")
+
+	os.MkdirAll(testDir1, 0755)
+	os.MkdirAll(testDir2, 0755)
+	os.MkdirAll(testDir3, 0755)
+
+	// Create files inside
+	os.WriteFile(filepath.Join(testDir1, "file.txt"), []byte("content"), 0644)
+	os.WriteFile(filepath.Join(testDir2, "file.txt"), []byte("content"), 0644)
+	os.WriteFile(filepath.Join(testDir3, "file.txt"), []byte("content"), 0644)
+
+	// Clean directories with glob pattern
+	dirsToClean := []string{
+		filepath.Join(testBaseDir, "test-dir-*"),
+	}
+	cleaned, err := executor.CleanDirectories(ctx, dirsToClean, "")
+	assert.NoError(t, err, "CleanDirectories should succeed")
+	assert.Len(t, cleaned, 2, "Should clean 2 directories")
+
+	// Verify test-dir-1 and test-dir-2 are removed
+	assert.NoDirExists(t, testDir1, "test-dir-1 should be removed")
+	assert.NoDirExists(t, testDir2, "test-dir-2 should be removed")
+	assert.DirExists(t, testDir3, "other-dir should still exist")
+}
+
+// TestCleanDirectories_EmptyList tests CleanDirectories with empty list.
+func TestCleanDirectories_EmptyList(t *testing.T) {
+	executor, _ := setupTestExecutor(t)
+	ctx := context.Background()
+
+	cleaned, err := executor.CleanDirectories(ctx, []string{}, "")
+	assert.NoError(t, err, "CleanDirectories with empty list should succeed")
+	assert.Nil(t, cleaned, "Should return nil for empty input")
+}
+
+// TestCleanDirectories_NonExistentPath tests CleanDirectories with non-existent paths.
+func TestCleanDirectories_NonExistentPath(t *testing.T) {
+	executor, _ := setupTestExecutor(t)
+	ctx := context.Background()
+
+	// Try to clean non-existent directories - should not error
+	cleaned, err := executor.CleanDirectories(ctx, []string{"/non/existent/path/*"}, "")
+	assert.NoError(t, err, "CleanDirectories with non-existent paths should succeed")
+	assert.Empty(t, cleaned, "Should return empty list for non-existent paths")
+}

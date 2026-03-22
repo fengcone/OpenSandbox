@@ -31,4 +31,9 @@ type Executor interface {
 	// RestartMainContainer restarts the main container (used for reset).
 	// This is separated from Reset for cleaner responsibility division.
 	RestartMainContainer(ctx context.Context, mainContainerName string) error
+
+	// CleanDirectories cleans the specified directories.
+	// In sidecar mode, it uses nsenter to enter the main container's mount namespace.
+	// Returns the list of directories that were successfully cleaned.
+	CleanDirectories(ctx context.Context, dirs []string, mainContainerName string) ([]string, error)
 }
