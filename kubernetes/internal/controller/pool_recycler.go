@@ -23,6 +23,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	sandboxv1alpha1 "github.com/alibaba/OpenSandbox/sandbox-k8s/apis/sandbox/v1alpha1"
 )
 
 const (
@@ -31,15 +33,7 @@ const (
 	// KillCommand is the command executed to restart containers
 	KillCommand = "kill"
 	KillArg     = "1"
-
-	// PodRecyclePolicyRestart restarts containers in the Pod
-	PodRecyclePolicyRestart PodRecyclePolicy = "Restart"
-	// PodRecyclePolicyDelete deletes the Pod
-	PodRecyclePolicyDelete PodRecyclePolicy = "Delete"
 )
-
-// PodRecyclePolicy is the policy for recycling Pods.
-type PodRecyclePolicy string
 
 // PodRecycler is responsible for recycling Pods based on the specified policy.
 type PodRecycler struct {
@@ -70,13 +64,14 @@ type RecycleResult struct {
 
 // Recycle recycles the given Pod based on the specified policy.
 // For Restart policy: executes "kill 1" in all containers and waits for them to become ready.
-//                     If timeout, falls back to Delete.
+//
+//	If timeout, falls back to Delete.
 // For Delete policy: deletes the Pod directly.
-func (r *PodRecycler) Recycle(ctx context.Context, pod *corev1.Pod, policy PodRecyclePolicy) RecycleResult {
+func (r *PodRecycler) Recycle(ctx context.Context, pod *corev1.Pod, policy sandboxv1alpha1.PodRecyclePolicy) RecycleResult {
 	switch policy {
-	case PodRecyclePolicyRestart:
+	case sandboxv1alpha1.PodRecyclePolicyRestart:
 		return r.restartAndDelete(ctx, pod)
-	case PodRecyclePolicyDelete, "":
+	case sandboxv1alpha1.PodRecyclePolicyDelete, "":
 		return r.delete(ctx, pod)
 	default:
 		return r.delete(ctx, pod)
