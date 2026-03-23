@@ -7,6 +7,10 @@ metadata:
   name: pool-sample
   namespace: opensandbox
 spec:
+  # PodRecyclePolicy 定义当 Pod 从 Sandbox 释放回 Pool 时的回收策略
+  # 可选值: Restart (重启容器) | Delete (删除并重建 Pod)
+  # 默认值：Delete
+  podRecyclePolicy: Restart
   template:
     metadata:
       labels:
