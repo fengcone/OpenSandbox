@@ -22,6 +22,29 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+// PodRecyclePolicy defines the policy for recycling Pods when they are released back to the pool.
+// +kubebuilder:validation:Enum=Restart;Delete
+type PodRecyclePolicy string
+
+const (
+	// PodRecyclePolicyRestart restarts containers by executing "kill 1" command.
+	// The Pod is kept (same UID/IP) and waits for all containers to become ready.
+	// If timeout, falls back to Delete.
+	PodRecyclePolicyRestart PodRecyclePolicy = "Restart"
+
+	// PodRecyclePolicyDelete deletes the Pod and creates a new one.
+	// This is the default policy.
+	PodRecyclePolicyDelete PodRecyclePolicy = "Delete"
+)
+
+// GetPodRecyclePolicy returns the PodRecyclePolicy for the Pool, defaulting to Delete if not set.
+func (p *Pool) GetPodRecyclePolicy() PodRecyclePolicy {
+	if p.Spec.PodRecyclePolicy == "" {
+		return PodRecyclePolicyDelete
+	}
+	return p.Spec.PodRecyclePolicy
+}
+
 // PoolSpec defines the desired state of Pool.
 type PoolSpec struct {
 	// Pod Template used to create pre-warmed nodes in the pool.
@@ -29,6 +52,10 @@ type PoolSpec struct {
 	// +kubebuilder:validation:Schemaless
 	// +kubebuilder:validation:Optional
 	Template *corev1.PodTemplateSpec `json:"template"`
+	// PodRecyclePolicy defines the policy for recycling Pods when they are released back to the pool.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=Restart;Delete
+	PodRecyclePolicy PodRecyclePolicy `json:"podRecyclePolicy,omitempty"`
 	// CapacitySpec controls the size of the resource pool.
 	// +kubebuilder:validation:Required
 	CapacitySpec CapacitySpec `json:"capacitySpec"`
