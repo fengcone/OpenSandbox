@@ -183,7 +183,7 @@ func (r *PoolReconciler) reconcilePool(ctx context.Context, pool *sandboxv1alpha
 		if err != nil {
 			return err
 		}
-		latestIdlePods, deleteOld, supplyNew := r.updatePool(latestRevision, pods, idlePods)
+		latestIdlePods, supplyNew := r.updatePool(ctx, latestRevision, latestPool, pods, idlePods)
 
 		args := &scaleArgs{
 			latestRevision: latestRevision,
@@ -191,7 +191,7 @@ func (r *PoolReconciler) reconcilePool(ctx context.Context, pool *sandboxv1alpha
 			pods:           pods,
 			allocatedCnt:   int32(len(podAllocation)),
 			idlePods:       latestIdlePods,
-			redundantPods:  deleteOld,
+			redundantPods:  nil,
 			supplyCnt:      supplySandbox + supplyNew,
 		}
 		if err := r.scalePool(ctx, args); err != nil {
