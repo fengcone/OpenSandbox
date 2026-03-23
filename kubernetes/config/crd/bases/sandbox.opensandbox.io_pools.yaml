@@ -84,6 +84,17 @@ spec:
                 - poolMax
                 - poolMin
                 type: object
+              podRecyclePolicy:
+                allOf:
+                - enum:
+                  - Restart
+                  - Delete
+                - enum:
+                  - Restart
+                  - Delete
+                description: PodRecyclePolicy defines the policy for recycling Pods
+                  when they are released back to the pool.
+                type: string
               template:
                 description: Pod Template used to create pre-warmed nodes in the pool.
                 x-kubernetes-preserve-unknown-fields: true
