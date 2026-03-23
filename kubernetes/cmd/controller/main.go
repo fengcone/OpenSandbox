@@ -19,6 +19,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -26,6 +27,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
@@ -246,11 +248,21 @@ func main() {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
-	setupLog.Info("register field index")
 	if err := fieldindex.RegisterFieldIndexes(mgr.GetCache()); err != nil {
 		setupLog.Error(err, "failed to register field index")
 		os.Exit(1)
 	}
+
+	// 创建 Kubernetes clientset 用于 Exec 操作
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		setupLog.Error(err, "Failed to create kubernetes clientset")
+		os.Exit(1)
+	}
+
+	// 创建 PodRecycler
+	recycler := controller.NewPodRecycler(clientset, mgr.GetClient(), config, 60*time.Second)
+
 	if err := (&controller.BatchSandboxReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
@@ -260,10 +272,11 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.PoolReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Recorder:  mgr.GetEventRecorderFor("pool-controller"),
-		Allocator: controller.NewDefaultAllocator(mgr.GetClient()),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Recorder:   mgr.GetEventRecorderFor("pool-controller"),
+		Allocator:  controller.NewDefaultAllocator(mgr.GetClient()),
+		Recycler:   recycler,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Pool")
 		os.Exit(1)
