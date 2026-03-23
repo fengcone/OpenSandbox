@@ -315,7 +315,8 @@ func (r *PoolReconciler) scheduleSandbox(ctx context.Context, pool *sandboxv1alp
 	return status.PodAllocation, idlePods, status.PodSupplement, poolDirty, nil
 }
 
-func (r *PoolReconciler) updatePool(latestRevision string, pods []*corev1.Pod, idlePods []string) ([]string, []string, int32) {
+func (r *PoolReconciler) updatePool(ctx context.Context, latestRevision string, pool *sandboxv1alpha1.Pool, pods []*corev1.Pod, idlePods []string) ([]string, int32) {
+	log := logf.FromContext(ctx)
 	podMap := make(map[string]*corev1.Pod)
 	for _, pod := range pods {
 		podMap[pod.Name] = pod
@@ -323,6 +324,8 @@ func (r *PoolReconciler) updatePool(latestRevision string, pods []*corev1.Pod, i
 	latestIdlePods := make([]string, 0)
 	deleteOld := make([]string, 0)
 	supplyNew := int32(0)
+
+	policy := pool.GetPodRecyclePolicy()
 
 	for _, name := range idlePods {
 		pod, ok := podMap[name]
@@ -333,12 +336,32 @@ func (r *PoolReconciler) updatePool(latestRevision string, pods []*corev1.Pod, i
 		if revision == latestRevision {
 			latestIdlePods = append(latestIdlePods, name)
 		} else {
-			// Rolling: (1) delete old idle pods (2) create latest pods
-			deleteOld = append(deleteOld, name)
-			supplyNew++
+			// Rolling: 根据 PodRecyclePolicy 处理
+			if policy == sandboxv1alpha1.PodRecyclePolicyRestart {
+				// 尝试 Restart
+				result := r.Recycler.Recycle(ctx, pod, policy)
+				if result.Error != nil || result.Action == "deleted" {
+					// Restart 失败或被 fallback 到 Delete
+					deleteOld = append(deleteOld, name)
+					supplyNew++
+					r.Recorder.Eventf(pool, corev1.EventTypeWarning, "PodRestartFailed",
+						"Failed to restart pod %s, deleting instead", pod.Name)
+				} else {
+					// Restart 成功
+					r.Recorder.Eventf(pool, corev1.EventTypeNormal, "PodRestarted",
+						"Successfully restarted pod %s", pod.Name)
+				}
+			} else {
+				// Delete 策略
+				deleteOld = append(deleteOld, name)
+				supplyNew++
+				r.Recorder.Eventf(pool, corev1.EventTypeNormal, "PodDeleted",
+					"Deleted pod %s for rolling update", pod.Name)
+			}
 		}
 	}
-	return latestIdlePods, deleteOld, supplyNew
+	log.Info("UpdatePool completed", "latestIdlePods", latestIdlePods, "deleteOld", deleteOld, "supplyNew", supplyNew)
+	return latestIdlePods, supplyNew
 }
 
 type scaleArgs struct {
