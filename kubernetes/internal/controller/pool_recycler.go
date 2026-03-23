@@ -16,11 +16,15 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -39,17 +43,19 @@ const (
 type PodRecycler struct {
 	clientset *kubernetes.Clientset
 	client    client.Client
+	config    *rest.Config
 	timeout   time.Duration
 }
 
 // NewPodRecycler creates a new PodRecycler with the given configuration.
-func NewPodRecycler(clientset *kubernetes.Clientset, client client.Client, timeout time.Duration) *PodRecycler {
+func NewPodRecycler(clientset *kubernetes.Clientset, client client.Client, config *rest.Config, timeout time.Duration) *PodRecycler {
 	if timeout == 0 {
 		timeout = DefaultRestartTimeout
 	}
 	return &PodRecycler{
 		clientset: clientset,
 		client:    client,
+		config:    config,
 		timeout:   timeout,
 	}
 }
@@ -112,4 +118,47 @@ func (r *PodRecycler) restartAndDelete(ctx context.Context, pod *corev1.Pod) Rec
 	}
 
 	return RecycleResult{Action: "restarted", Error: nil}
+}
+
+// execKill executes "kill 1" in the specified container.
+func (r *PodRecycler) execKill(ctx context.Context, pod *corev1.Pod, container string) error {
+	cmd := []string{KillCommand, KillArg}
+
+	req := r.clientset.CoreV1().RESTClient().
+		Post().
+		Resource("pods").
+		Name(pod.Name).
+		Namespace(pod.Namespace).
+		SubResource("exec").
+		Param("container", container).
+		VersionedParams(&corev1.PodExecOptions{
+			Container: container,
+			Command:   cmd,
+			Stdin:     false,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       false,
+		}, metav1.ParameterCodec)
+
+	exec, err := remotecommand.NewSPDYExecutor(r.config, "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("failed to create executor: %w", err)
+	}
+
+	if err := exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  nil,
+		Stdout: nil,
+		Stderr: nil,
+		Tty:    false,
+	}); err != nil {
+		return fmt.Errorf("failed to execute kill command: %w", err)
+	}
+
+	return nil
+}
+
+// waitForContainersReady waits for all containers in the pod to become ready.
+// TODO: This is a stub implementation for Task 2.4
+func (r *PodRecycler) waitForContainersReady(ctx context.Context, pod *corev1.Pod) error {
+	return nil
 }
