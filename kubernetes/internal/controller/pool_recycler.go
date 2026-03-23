@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
@@ -157,8 +158,25 @@ func (r *PodRecycler) execKill(ctx context.Context, pod *corev1.Pod, container s
 	return nil
 }
 
-// waitForContainersReady waits for all containers in the pod to become ready.
-// TODO: This is a stub implementation for Task 2.4
+// waitForContainersReady waits until all containers in the Pod are ready.
 func (r *PodRecycler) waitForContainersReady(ctx context.Context, pod *corev1.Pod) error {
-	return nil
+	return wait.PollUntilContextTimeout(ctx, 1*time.Second, r.timeout, true,
+		func(ctx context.Context) (done bool, err error) {
+			latest, err := r.clientset.CoreV1().Pods(pod.Namespace).
+				Get(ctx, pod.Name, metav1.GetOptions{})
+			if err != nil {
+				if errors.IsNotFound(err) {
+					// Pod was deleted during restart, treat as failure
+					return false, fmt.Errorf("pod %s was deleted during restart", pod.Name)
+				}
+				return false, err
+			}
+
+			for _, cs := range latest.Status.ContainerStatuses {
+				if !cs.Ready {
+					return false, nil
+				}
+			}
+			return true, nil
+		})
 }
