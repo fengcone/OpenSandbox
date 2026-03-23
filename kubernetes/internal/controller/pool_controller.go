@@ -68,6 +68,7 @@ type PoolReconciler struct {
 	Scheme    *runtime.Scheme
 	Recorder  record.EventRecorder
 	Allocator Allocator
+	Recycler  *PodRecycler
 }
 
 // +kubebuilder:rbac:groups=sandbox.opensandbox.io,resources=pools,verbs=get;list;watch;create;update;patch;delete
