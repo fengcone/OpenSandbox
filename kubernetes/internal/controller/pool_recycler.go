@@ -15,10 +15,14 @@
 package controller
 
 import (
+	"context"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -27,7 +31,15 @@ const (
 	// KillCommand is the command executed to restart containers
 	KillCommand = "kill"
 	KillArg     = "1"
+
+	// PodRecyclePolicyRestart restarts containers in the Pod
+	PodRecyclePolicyRestart PodRecyclePolicy = "Restart"
+	// PodRecyclePolicyDelete deletes the Pod
+	PodRecyclePolicyDelete PodRecyclePolicy = "Delete"
 )
+
+// PodRecyclePolicy is the policy for recycling Pods.
+type PodRecyclePolicy string
 
 // PodRecycler is responsible for recycling Pods based on the specified policy.
 type PodRecycler struct {
@@ -54,4 +66,55 @@ type RecycleResult struct {
 	Action string
 	// Error is the error encountered, if any
 	Error error
+}
+
+// Recycle recycles the given Pod based on the specified policy.
+// For Restart policy: executes "kill 1" in all containers and waits for them to become ready.
+//                     If timeout, falls back to Delete.
+// For Delete policy: deletes the Pod directly.
+func (r *PodRecycler) Recycle(ctx context.Context, pod *corev1.Pod, policy PodRecyclePolicy) RecycleResult {
+	switch policy {
+	case PodRecyclePolicyRestart:
+		return r.restartAndDelete(ctx, pod)
+	case PodRecyclePolicyDelete, "":
+		return r.delete(ctx, pod)
+	default:
+		return r.delete(ctx, pod)
+	}
+}
+
+// delete deletes the Pod and returns the result.
+func (r *PodRecycler) delete(ctx context.Context, pod *corev1.Pod) RecycleResult {
+	err := r.client.Delete(ctx, pod)
+	if err != nil && !errors.IsNotFound(err) {
+		return RecycleResult{Action: "deleted", Error: err}
+	}
+	return RecycleResult{Action: "deleted", Error: nil}
+}
+
+// restartAndDelete executes "kill 1" in all containers, waits for them to become ready,
+// and falls back to delete if timeout.
+func (r *PodRecycler) restartAndDelete(ctx context.Context, pod *corev1.Pod) RecycleResult {
+	log := logf.FromContext(ctx)
+
+	// Step 1: Execute "kill 1" in all containers
+	for _, container := range pod.Spec.Containers {
+		if err := r.execKill(ctx, pod, container.Name); err != nil {
+			log.Error(err, "Failed to exec kill in container, falling back to delete",
+				"pod", pod.Name, "container", container.Name)
+			return r.delete(ctx, pod)
+		}
+	}
+
+	// Step 2: Wait for all containers to become ready
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	if err := r.waitForContainersReady(ctxWithTimeout, pod); err != nil {
+		log.Error(err, "Timeout waiting for containers to become ready, deleting Pod",
+			"pod", pod.Name, "timeout", r.timeout)
+		return r.delete(ctx, pod)
+	}
+
+	return RecycleResult{Action: "restarted", Error: nil}
 }
