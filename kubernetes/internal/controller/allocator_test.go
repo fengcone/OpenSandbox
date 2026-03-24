@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -493,4 +494,71 @@ func TestSyncSandboxAllocationError(t *testing.T) {
 
 	err := allocator.SyncSandboxAllocation(context.Background(), sandbox, pods)
 	assert.Error(t, err)
+}
+
+func TestScheduleExcludesRestartingPods(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	store := NewMockAllocationStore(ctrl)
+	syncer := NewMockAllocationSyncer(ctrl)
+	allocator := &defaultAllocator{
+		store:  store,
+		syncer: syncer,
+	}
+	replica1 := int32(1)
+
+	// Create pods: one normal, one restarting (should be excluded from allocation)
+	restartingMeta := PodRecycleMeta{
+		State:       RecycleStateRestarting,
+		TriggeredAt: 1234567890,
+	}
+	restartingMetaJSON, _ := json.Marshal(restartingMeta)
+
+	pods := []*corev1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "pod-normal",
+			},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "pod-restarting",
+				Annotations: map[string]string{
+					AnnoPodRecycleMeta: string(restartingMetaJSON),
+				},
+			},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		},
+	}
+	sandboxes := []*sandboxv1alpha1.BatchSandbox{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "sbx1"},
+			Spec:       sandboxv1alpha1.BatchSandboxSpec{Replicas: &replica1},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "sbx2"},
+			Spec:       sandboxv1alpha1.BatchSandboxSpec{Replicas: &replica1},
+		},
+	}
+	spec := &AllocSpec{
+		Pods:      pods,
+		Sandboxes: sandboxes,
+		Pool:      &sandboxv1alpha1.Pool{ObjectMeta: metav1.ObjectMeta{Name: "pool1"}},
+	}
+
+	store.EXPECT().GetAllocation(gomock.Any(), gomock.Any()).Return(&PoolAllocation{PodAllocation: map[string]string{}}, nil).Times(1)
+	syncer.EXPECT().GetAllocation(gomock.Any(), gomock.Any()).Return(&SandboxAllocation{Pods: []string{}}, nil).Times(2)
+	syncer.EXPECT().GetRelease(gomock.Any(), gomock.Any()).Return(&AllocationRelease{Pods: []string{}}, nil).Times(2)
+
+	status, pendingSyncs, poolDirty, err := allocator.Schedule(context.Background(), spec)
+
+	assert.NoError(t, err)
+	assert.True(t, poolDirty)
+	// Only the normal pod should be allocated, sbx2 should have no pod
+	assert.Contains(t, status.PodAllocation, "pod-normal")
+	assert.NotContains(t, status.PodAllocation, "pod-restarting")
+	// sbx2 should need supplement since restarting pod is excluded
+	assert.Equal(t, int32(1), status.PodSupplement)
+	assert.Len(t, pendingSyncs, 1)
 }

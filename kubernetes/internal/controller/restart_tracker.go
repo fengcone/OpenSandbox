@@ -33,8 +33,8 @@ import (
 
 // Restart timeout configurations
 const (
-	restartTimeout = 90 * time.Second
-	killTimeout    = 30 * time.Second
+	defaultRestartTimeout = 90 * time.Second
+	killTimeout           = 30 * time.Second
 )
 
 // restartTracker manages the Pod restart lifecycle as part of the PoolReconciler.
@@ -48,22 +48,28 @@ const (
 //	    all restarted & ready → None (clear annotation, reuse)
 //	    timeout / CrashLoop   → delete Pod
 type restartTracker struct {
-	client     client.Client
-	kubeClient kubernetes.Interface
-	restConfig *rest.Config
+	client         client.Client
+	kubeClient     kubernetes.Interface
+	restConfig     *rest.Config
+	restartTimeout time.Duration
 }
 
 type RestartTracker interface {
 	HandleRestart(ctx context.Context, pod *corev1.Pod) error
 }
 
-// NewRestartTracker creates a new restartTracker.
-func NewRestartTracker(c client.Client, kubeClient kubernetes.Interface, restConfig *rest.Config) RestartTracker {
-	return &restartTracker{
-		client:     c,
-		kubeClient: kubeClient,
-		restConfig: restConfig,
+// NewRestartTracker creates a new restartTracker with custom restart timeout.
+func NewRestartTracker(c client.Client, kubeClient kubernetes.Interface, restConfig *rest.Config, restartTimeout time.Duration) RestartTracker {
+	r := &restartTracker{
+		client:         c,
+		kubeClient:     kubeClient,
+		restConfig:     restConfig,
+		restartTimeout: restartTimeout,
 	}
+	if r.restartTimeout == 0 {
+		r.restartTimeout = defaultRestartTimeout
+	}
+	return r
 }
 
 // HandleRestart handles the Restart recycle policy for a Pod.
@@ -206,9 +212,9 @@ func (t *restartTracker) checkRestartStatus(ctx context.Context, pod *corev1.Pod
 		return t.client.Delete(ctx, pod)
 	}
 
-	if elapsed > restartTimeout {
+	if elapsed > t.restartTimeout {
 		log.Info("Pod restart timeout, deleting", "pod", pod.Name,
-			"elapsed", elapsed, "timeout", restartTimeout,
+			"elapsed", elapsed, "timeout", t.restartTimeout,
 			"allRestarted", allRestarted, "allReady", allReady)
 		return t.client.Delete(ctx, pod)
 	}

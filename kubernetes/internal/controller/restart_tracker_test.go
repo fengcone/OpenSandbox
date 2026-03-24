@@ -134,7 +134,7 @@ func TestRestartTracker_CheckRestartStatus_Timeout(t *testing.T) {
 
 	meta := &PodRecycleMeta{
 		State:       RecycleStateRestarting,
-		TriggeredAt: time.Now().UnixMilli() - (restartTimeout.Milliseconds() + 1000),
+		TriggeredAt: time.Now().UnixMilli() - (defaultRestartTimeout.Milliseconds() + 1000),
 		InitialRestartCounts: map[string]int32{
 			"c1": 0,
 		},
@@ -143,7 +143,8 @@ func TestRestartTracker_CheckRestartStatus_Timeout(t *testing.T) {
 
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pod).Build()
 	tracker := &restartTracker{
-		client: client,
+		client:         client,
+		restartTimeout: defaultRestartTimeout,
 	}
 
 	err := tracker.checkRestartStatus(context.Background(), pod)
@@ -229,7 +230,8 @@ func TestRestartTracker_CheckRestartStatus_StillRestarting(t *testing.T) {
 
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pod).Build()
 	tracker := &restartTracker{
-		client: client,
+		client:         client,
+		restartTimeout: defaultRestartTimeout,
 	}
 
 	err := tracker.checkRestartStatus(context.Background(), pod)

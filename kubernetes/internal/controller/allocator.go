@@ -227,6 +227,9 @@ func (allocator *defaultAllocator) Schedule(ctx context.Context, spec *AllocSpec
 		if pod.Status.Phase != corev1.PodRunning {
 			continue
 		}
+		if isRestarting(pod) {
+			continue
+		}
 		availablePods = append(availablePods, pod.Name)
 	}
 	log.V(1).Info("Schedule init", "existingAllocations", len(status.PodAllocation), "availablePods", len(availablePods))

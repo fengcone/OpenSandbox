@@ -35,6 +35,39 @@ var _ = Describe("Pod Recycle Policy", Ordered, func() {
 	const testNamespace = "default"
 
 	BeforeAll(func() {
+		By("creating manager namespace")
+		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
+
+		By("labeling the namespace to enforce the restricted security policy")
+		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+			"pod-security.kubernetes.io/enforce=restricted")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
+
+		By("installing CRDs")
+		cmd = exec.Command("make", "install")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+		By("deploying the controller-manager")
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("CONTROLLER_IMG=%s", utils.ControllerImage))
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("patching controller deployment with restart-timeout for testing")
+		cmd = exec.Command("kubectl", "patch", "deployment", "opensandbox-controller-manager", "-n", namespace,
+			"--type", "json", "-p",
+			`[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--restart-timeout=10s"}]`)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to patch controller deployment")
+
+		By("waiting for controller rollout to complete")
+		cmd = exec.Command("kubectl", "rollout", "status", "deployment/opensandbox-controller-manager", "-n", namespace, "--timeout=60s")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to wait for controller rollout")
+
 		By("waiting for controller to be ready")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
@@ -43,6 +76,20 @@ var _ = Describe("Pod Recycle Policy", Ordered, func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("Running"))
 		}, 2*time.Minute).Should(Succeed())
+	})
+
+	AfterAll(func() {
+		By("undeploying the controller-manager")
+		cmd := exec.Command("make", "undeploy")
+		_, _ = utils.Run(cmd)
+
+		By("uninstalling CRDs")
+		cmd = exec.Command("make", "uninstall")
+		_, _ = utils.Run(cmd)
+
+		By("removing manager namespace")
+		cmd = exec.Command("kubectl", "delete", "ns", namespace)
+		_, _ = utils.Run(cmd)
 	})
 
 	SetDefaultEventuallyTimeout(3 * time.Minute)
@@ -411,7 +458,7 @@ var _ = Describe("Pod Recycle Policy", Ordered, func() {
 				_, err := utils.Run(cmd)
 				g.Expect(err).To(HaveOccurred(), "Pod should be deleted after timeout")
 				g.Expect(err.Error()).To(ContainSubstring("not found"))
-			}, 4*time.Minute).Should(Succeed()) // restartTimeout (90s) + buffer
+			}, 1*time.Minute).Should(Succeed())
 
 			By("cleaning up")
 			cmd = exec.Command("kubectl", "delete", "pool", poolName, "-n", testNamespace)
