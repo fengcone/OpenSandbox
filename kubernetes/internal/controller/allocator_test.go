@@ -108,6 +108,7 @@ func TestAllocatorSchedule(t *testing.T) {
 					"pod2": "sbx2",
 				},
 				PodSupplement: 0,
+				PodsToRecycle: []string{},
 			},
 		},
 		{
@@ -171,6 +172,7 @@ func TestAllocatorSchedule(t *testing.T) {
 					"pod1": "sbx1",
 				},
 				PodSupplement: 1,
+				PodsToRecycle: []string{},
 			},
 		},
 		{
@@ -238,6 +240,7 @@ func TestAllocatorSchedule(t *testing.T) {
 					"pod2": "sbx1",
 				},
 				PodSupplement: 0,
+				PodsToRecycle: []string{},
 			},
 		},
 		{
@@ -280,12 +283,13 @@ func TestAllocatorSchedule(t *testing.T) {
 			},
 			release: &AllocationRelease{
 				Pods: []string{
-					"pod1", "sbx1",
+					"pod1",
 				},
 			},
 			wantStatus: &AllocStatus{
 				PodAllocation: map[string]string{},
 				PodSupplement: 0,
+				PodsToRecycle: []string{"pod1"},
 			},
 		},
 	}

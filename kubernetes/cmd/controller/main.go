@@ -26,6 +26,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
@@ -259,11 +260,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "BatchSandbox")
 		os.Exit(1)
 	}
+	kubeClient := kubernetes.NewForConfigOrDie(mgr.GetConfig())
+	restartTracker := controller.NewRestartTracker(mgr.GetClient(), kubeClient, mgr.GetConfig())
 	if err := (&controller.PoolReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Recorder:  mgr.GetEventRecorderFor("pool-controller"),
-		Allocator: controller.NewDefaultAllocator(mgr.GetClient()),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		Recorder:       mgr.GetEventRecorderFor("pool-controller"),
+		Allocator:      controller.NewDefaultAllocator(mgr.GetClient()),
+		RestartTracker: restartTracker,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Pool")
 		os.Exit(1)

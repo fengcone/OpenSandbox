@@ -180,10 +180,12 @@ type AllocSpec struct {
 }
 
 type AllocStatus struct {
-	// pod allocated to sandbox
+	// PodAllocation maps pod name to sandbox name for currently allocated pods.
 	PodAllocation map[string]string
-	// pod request count
+	// PodSupplement is the number of additional pods needed to meet sandbox demands.
 	PodSupplement int32
+	// PoolReconciler handles the actual recycle logic (delete or restart).
+	PodsToRecycle []string
 }
 
 type SandboxSyncInfo struct {
@@ -268,6 +270,7 @@ func (allocator *defaultAllocator) initAllocation(ctx context.Context, spec *All
 	var err error
 	status := &AllocStatus{
 		PodAllocation: make(map[string]string),
+		PodsToRecycle: make([]string, 0),
 	}
 	status.PodAllocation, err = allocator.getPodAllocation(ctx, spec.Pool)
 	if err != nil {
@@ -387,6 +390,7 @@ func (allocator *defaultAllocator) deallocate(ctx context.Context, status *Alloc
 		for _, pod := range pods {
 			delete(status.PodAllocation, pod)
 			poolDeallocate = true
+			status.PodsToRecycle = append(status.PodsToRecycle, pod)
 		}
 		delete(sandboxToPods, name)
 	}
@@ -394,7 +398,6 @@ func (allocator *defaultAllocator) deallocate(ctx context.Context, status *Alloc
 }
 
 func (allocator *defaultAllocator) doDeallocate(ctx context.Context, status *AllocStatus, sandboxToPods map[string][]string, sbx *sandboxv1alpha1.BatchSandbox) (bool, error) {
-	log := logf.FromContext(ctx)
 	deallocate := false
 	name := sbx.Name
 	allocatedPods, ok := sandboxToPods[name]
@@ -408,7 +411,7 @@ func (allocator *defaultAllocator) doDeallocate(ctx context.Context, status *All
 	for _, pod := range toRelease.Pods {
 		delete(status.PodAllocation, pod)
 		deallocate = true
-		log.V(1).Info("Pod released from sandbox", "pod", pod, "sandbox", name)
+		status.PodsToRecycle = append(status.PodsToRecycle, pod)
 	}
 	pods := make([]string, 0)
 	for _, pod := range allocatedPods {
