@@ -23,6 +23,7 @@ import (
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -177,6 +178,8 @@ type AllocSpec struct {
 	Pool *sandboxv1alpha1.Pool
 	// all pods of pool
 	Pods []*corev1.Pod
+
+	RecyclingPods sets.Set[string]
 }
 
 type AllocStatus struct {
@@ -184,8 +187,6 @@ type AllocStatus struct {
 	PodAllocation map[string]string
 	// PodSupplement is the number of additional pods needed to meet sandbox demands.
 	PodSupplement int32
-	// PoolReconciler handles the actual recycle logic (delete or restart).
-	PodsToRecycle []string
 }
 
 type SandboxSyncInfo struct {
@@ -223,7 +224,11 @@ func (allocator *defaultAllocator) Schedule(ctx context.Context, spec *AllocSpec
 		if _, ok := status.PodAllocation[pod.Name]; ok {
 			continue
 		}
-		if !canAllocate(pod) {
+		if spec.RecyclingPods.Has(pod.Name) {
+			continue
+		}
+		// Exclude pods that are restarting (have recycle-meta annotation)
+		if isRecycling(pod) {
 			continue
 		}
 		if pod.Status.Phase != corev1.PodRunning {
@@ -271,7 +276,6 @@ func (allocator *defaultAllocator) initAllocation(ctx context.Context, spec *All
 	var err error
 	status := &AllocStatus{
 		PodAllocation: make(map[string]string),
-		PodsToRecycle: make([]string, 0),
 	}
 	status.PodAllocation, err = allocator.getPodAllocation(ctx, spec.Pool)
 	if err != nil {
@@ -391,7 +395,6 @@ func (allocator *defaultAllocator) deallocate(ctx context.Context, status *Alloc
 		for _, pod := range pods {
 			delete(status.PodAllocation, pod)
 			poolDeallocate = true
-			status.PodsToRecycle = append(status.PodsToRecycle, pod)
 		}
 		delete(sandboxToPods, name)
 	}
@@ -413,7 +416,6 @@ func (allocator *defaultAllocator) doDeallocate(ctx context.Context, status *All
 		if _, ok := status.PodAllocation[pod]; ok {
 			delete(status.PodAllocation, pod)
 			deallocate = true
-			status.PodsToRecycle = append(status.PodsToRecycle, pod)
 		}
 	}
 	pods := make([]string, 0)

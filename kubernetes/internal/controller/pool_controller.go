@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/json"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -74,8 +75,6 @@ type scheduleResult struct {
 	supplySandbox int32
 	// poolDirty indicates if pool allocation annotation needs update.
 	poolDirty bool
-	// podsToRecycle contains pod names that were released from sandboxes
-	podsToRecycle []string
 }
 
 // PoolReconciler reconciles a Pool object
@@ -159,6 +158,29 @@ func (r *PoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	return r.reconcilePool(ctx, pool, batchSandboxes, pods)
 }
 
+func (r *PoolReconciler) collectRecyclingPods(batchSandboxes []*sandboxv1alpha1.BatchSandbox) (sets.Set[string], error) {
+	recycling := make(sets.Set[string])
+	for _, batchSandbox := range batchSandboxes {
+		if batchSandbox.DeletionTimestamp != nil {
+			allocation, err := parseSandboxAllocation(batchSandbox)
+			if err != nil {
+				return nil, err
+			}
+			for _, podName := range allocation.Pods {
+				recycling.Insert(podName)
+			}
+			released, err := parseSandboxReleased(batchSandbox)
+			if err != nil {
+				return nil, err
+			}
+			for _, podName := range released.Pods {
+				recycling.Insert(podName)
+			}
+		}
+	}
+	return recycling, nil
+}
+
 // reconcilePool contains the main reconciliation logic
 func (r *PoolReconciler) reconcilePool(ctx context.Context, pool *sandboxv1alpha1.Pool, batchSandboxes []*sandboxv1alpha1.BatchSandbox, pods []*corev1.Pod) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -172,32 +194,19 @@ func (r *PoolReconciler) reconcilePool(ctx context.Context, pool *sandboxv1alpha
 		}
 
 		// 2. First, handle Pod Recycle to ensure pods are ready for scheduling
-		// We need to identify pods that need recycling first
-		needReconcile := false
-		delay := time.Duration(0)
-		recycling := 0
-		for _, pod := range pods {
-			if !needsRecycleConfirmation(pod) {
-				continue
-			}
-			recycling++
-			if err := r.handlePodRecycle(ctx, latestPool, pod); err != nil {
-				log.Error(err, "Failed to handle pod recycle", "pod", pod.Name)
-				return err
-			}
-			// After handling recycle, check if pod is now ready
-			// If pod was restarting but is now ready, we need to requeue to refresh cache
-			if pod.Labels[LabelPodDeallocatedFrom] == "" {
-				needReconcile = true
-				// Use a longer delay to allow cache to sync after pod update
-				// This is critical for controller-runtime cache consistency
-				delay = 3 * time.Second
-				log.Info("Pod recycle completed, requeuing to refresh cache", "pod", pod.Name, "delay", delay)
-			}
+		recyclingPods, err := r.collectRecyclingPods(batchSandboxes)
+		if err != nil {
+			log.Error(err, "Failed to collect recycling pods")
+			return err
 		}
-
+		needReconcile := false
+		delay := defaultRetryTime
+		if needReconcile, err = r.handlePodRecycle(ctx, latestPool, pods); err != nil {
+			log.Error(err, "Failed to handle pod recycle")
+			return err
+		}
 		// 3. Schedule and allocate (after recycling is handled)
-		scheRes, err := r.scheduleSandbox(ctx, latestPool, batchSandboxes, pods)
+		scheRes, err := r.scheduleSandbox(ctx, latestPool, batchSandboxes, pods, recyclingPods)
 		if err != nil {
 			return err
 		}
@@ -241,7 +250,7 @@ func (r *PoolReconciler) reconcilePool(ctx context.Context, pool *sandboxv1alpha
 			pool:           latestPool,
 			pods:           pods,
 			allocatedCnt:   int32(len(scheRes.podAllocation)),
-			recycling:      int32(recycling),
+			recycling:      int32(len(recyclingPods)),
 			idlePods:       latestIdlePods,
 			redundantPods:  deleteOld,
 			supplyCnt:      scheRes.supplySandbox + supplyNew,
@@ -348,12 +357,13 @@ func (r *PoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *PoolReconciler) scheduleSandbox(ctx context.Context, pool *sandboxv1alpha1.Pool, batchSandboxes []*sandboxv1alpha1.BatchSandbox, pods []*corev1.Pod) (*scheduleResult, error) {
+func (r *PoolReconciler) scheduleSandbox(ctx context.Context, pool *sandboxv1alpha1.Pool, batchSandboxes []*sandboxv1alpha1.BatchSandbox, pods []*corev1.Pod, recyclingPods sets.Set[string]) (*scheduleResult, error) {
 	log := logf.FromContext(ctx)
 	spec := &AllocSpec{
-		Sandboxes: batchSandboxes,
-		Pool:      pool,
-		Pods:      pods,
+		Sandboxes:     batchSandboxes,
+		Pool:          pool,
+		Pods:          pods,
+		RecyclingPods: recyclingPods,
 	}
 	status, pendingSyncs, poolDirty, err := r.Allocator.Schedule(ctx, spec)
 	if err != nil {
@@ -364,7 +374,7 @@ func (r *PoolReconciler) scheduleSandbox(ctx context.Context, pool *sandboxv1alp
 		if _, ok := status.PodAllocation[pod.Name]; ok {
 			continue
 		}
-		if !canAllocate(pod) {
+		if recyclingPods.Has(pod.Name) {
 			continue
 		}
 		idlePods = append(idlePods, pod.Name)
@@ -377,7 +387,6 @@ func (r *PoolReconciler) scheduleSandbox(ctx context.Context, pool *sandboxv1alp
 		idlePods:      idlePods,
 		supplySandbox: status.PodSupplement,
 		poolDirty:     poolDirty,
-		podsToRecycle: status.PodsToRecycle,
 	}, nil
 }
 
@@ -499,9 +508,7 @@ func (r *PoolReconciler) updatePoolStatus(ctx context.Context, latestRevision st
 			restartingCnt++
 			continue
 		}
-		// Only count as available if Running AND can be allocated
-		// (e.g., no deallocated-from label blocking allocation)
-		if pod.Status.Phase == corev1.PodRunning && canAllocate(pod) {
+		if pod.Status.Phase == corev1.PodRunning && !isRecycling(pod) {
 			availableCnt++
 		}
 		// Non-running, non-restarting, or non-allocatable pods are implicitly counted in Total - Allocated - Available - Restarting
@@ -588,8 +595,9 @@ func (r *PoolReconciler) createPoolPod(ctx context.Context, pool *sandboxv1alpha
 
 // handlePodRecycle handles Pod recycle based on PodRecyclePolicy.
 // It should be called when a Pod is released from BatchSandbox.
-func (r *PoolReconciler) handlePodRecycle(ctx context.Context, pool *sandboxv1alpha1.Pool, pod *corev1.Pod) error {
+func (r *PoolReconciler) handlePodRecycle(ctx context.Context, pool *sandboxv1alpha1.Pool, pods []*corev1.Pod) (bool, error) {
 	log := logf.FromContext(ctx)
+	errs := make([]error, 0)
 	policy := sandboxv1alpha1.PodRecyclePolicyDelete
 	if pool.Spec.PodRecyclePolicy != "" {
 		policy = pool.Spec.PodRecyclePolicy
@@ -604,25 +612,23 @@ func (r *PoolReconciler) handlePodRecycle(ctx context.Context, pool *sandboxv1al
 			}
 		}
 	}
-
-	if policy == sandboxv1alpha1.PodRecyclePolicyRestart {
-		return r.RestartTracker.HandleRestart(ctx, pod, timeout)
+	needReconcile := false
+	for _, pod := range pods {
+		if !isRecycling(pod) {
+			continue
+		}
+		needReconcile = true
+		var err error
+		if policy == sandboxv1alpha1.PodRecyclePolicyRestart {
+			err = r.RestartTracker.HandleRestart(ctx, pod, timeout)
+		} else {
+			log.Info("Deleting Pod with Delete policy", "pod", pod.Name)
+			err = r.Delete(ctx, pod)
+		}
+		if err != nil {
+			log.Error(err, "Failed to recycle pod", "pod", pod.Name)
+			errs = append(errs, err)
+		}
 	}
-	logf.FromContext(ctx).Info("Deleting Pod with Delete policy", "pod", pod.Name)
-	return r.Delete(ctx, pod)
-}
-
-// needsRecycleConfirmation checks if a pod needs recycle handling.
-func needsRecycleConfirmation(pod *corev1.Pod) bool {
-	deallocatedFrom := pod.Labels[LabelPodDeallocatedFrom]
-	if pod.Annotations[AnnoPodRecycleMeta] != "" {
-		return true
-	}
-	if deallocatedFrom == "" {
-		return false
-	}
-	// Has deallocated-from, check if recycle is confirmed
-	recycleConfirmed := pod.Labels[LabelPodRecycleConfirmed]
-	// Needs recycle if not confirmed, or confirmed for a different BatchSandbox
-	return recycleConfirmed != deallocatedFrom
+	return needReconcile, gerrors.Join(errs...)
 }

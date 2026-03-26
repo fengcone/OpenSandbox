@@ -87,38 +87,12 @@ func setPodRecycleMeta(obj metav1.Object, meta *PodRecycleMeta) {
 	obj.GetAnnotations()[AnnoPodRecycleMeta] = utils.DumpJSON(meta)
 }
 
-// canAllocate checks if a pod is eligible for allocation.
-// A pod can be allocated if:
-// 1. No deallocated-from label (normal pod), OR
-// 2. Has recycle-confirmed label AND no recycle-meta annotation (recycling completed)
-func canAllocate(pod *corev1.Pod) bool {
-	deallocatedFrom := pod.Labels[LabelPodDeallocatedFrom]
-	if deallocatedFrom == "" {
-		return true // Normal pod, no deallocation marker
-	}
-
-	// Has deallocated-from, check if recycling is confirmed and completed
-	recycleConfirmed := pod.Labels[LabelPodRecycleConfirmed]
-	meta := pod.Annotations[AnnoPodRecycleMeta]
-
-	// Can allocate only if recycling is confirmed AND not in restarting state
-	return recycleConfirmed != "" && meta == ""
+func isRestarting(pod *corev1.Pod) bool {
+	return pod.Annotations[AnnoPodRecycleMeta] != ""
 }
 
-func isRestarting(pod *corev1.Pod) bool {
-	// - recycle-confirmed is set when restart starts
-	// - recycle-confirmed is KEPT as a receipt after restart completes
-	// - recycle-meta is cleared when restart completes
-	meta := pod.Annotations[AnnoPodRecycleMeta]
-	if meta == "" {
-		return false
-	}
-	// Parse to verify it's in Restarting state (not just stale data)
-	var recycleMeta PodRecycleMeta
-	if err := json.Unmarshal([]byte(meta), &recycleMeta); err != nil {
-		return false
-	}
-	return recycleMeta.State == RecycleStateRestarting
+func isRecycling(pod *corev1.Pod) bool {
+	return pod.Labels[LabelPodDeallocatedFrom] != "" || pod.Annotations[AnnoPodRecycleMeta] != ""
 }
 
 // AnnotationSandboxEndpoints Use the exported constant from pkg/utils

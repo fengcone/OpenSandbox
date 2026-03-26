@@ -64,7 +64,6 @@ func NewRestartTracker(c client.Client, kubeClient kubernetes.Interface, restCon
 		kubeClient: kubeClient,
 		restConfig: restConfig,
 	}
-
 	return r
 }
 
@@ -104,10 +103,8 @@ func (t *restartTracker) updatePodRecycleMeta(ctx context.Context, pod *corev1.P
 	setPodRecycleMeta(pod, meta)
 
 	// Set recycle-confirmed label from deallocated-from label value
-	if deallocatedFrom := pod.Labels[LabelPodDeallocatedFrom]; deallocatedFrom != "" {
-		if pod.Labels == nil {
-			pod.Labels = make(map[string]string)
-		}
+	deallocatedFrom := pod.Labels[LabelPodDeallocatedFrom]
+	if deallocatedFrom != "" {
 		pod.Labels[LabelPodRecycleConfirmed] = deallocatedFrom
 	}
 
@@ -233,7 +230,7 @@ func (t *restartTracker) checkRestartStatus(ctx context.Context, pod *corev1.Pod
 		return t.client.Delete(ctx, pod)
 	}
 	log.Info("Pod still restarting", "pod", pod.Name, "elapsed", elapsed,
-		"allRestarted", allRestarted, "podReady", podReady)
+		"allRestarted", allRestarted, "podReady", podReady, "timeout", restartTimeout, "elapsed", elapsed)
 	return nil
 }
 

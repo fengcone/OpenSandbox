@@ -116,7 +116,7 @@ spec:
   capacitySpec:
     bufferMax: 1
     bufferMin: 1
-    poolMax: 2
+    poolMax: 1
     poolMin: 1
 `, poolName, testNamespace)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
@@ -377,7 +377,7 @@ spec:
   capacitySpec:
     bufferMax: 1
     bufferMin: 1
-    poolMax: 2
+    poolMax: 1
     poolMin: 1
 `, poolName, testNamespace)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
@@ -575,7 +575,7 @@ spec:
   capacitySpec:
     bufferMax: 1
     bufferMin: 1
-    poolMax: 2
+    poolMax: 1
     poolMin: 1
 `, poolName, testNamespace)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")

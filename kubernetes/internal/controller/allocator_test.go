@@ -109,7 +109,6 @@ func TestAllocatorSchedule(t *testing.T) {
 					"pod2": "sbx2",
 				},
 				PodSupplement: 0,
-				PodsToRecycle: []string{},
 			},
 		},
 		{
@@ -173,7 +172,6 @@ func TestAllocatorSchedule(t *testing.T) {
 					"pod1": "sbx1",
 				},
 				PodSupplement: 1,
-				PodsToRecycle: []string{},
 			},
 		},
 		{
@@ -241,7 +239,6 @@ func TestAllocatorSchedule(t *testing.T) {
 					"pod2": "sbx1",
 				},
 				PodSupplement: 0,
-				PodsToRecycle: []string{},
 			},
 		},
 		{
@@ -296,7 +293,6 @@ func TestAllocatorSchedule(t *testing.T) {
 			wantStatus: &AllocStatus{
 				PodAllocation: map[string]string{},
 				PodSupplement: 0,
-				PodsToRecycle: []string{"pod1"},
 			},
 		},
 		{
@@ -363,7 +359,6 @@ func TestAllocatorSchedule(t *testing.T) {
 					"pod-normal": "sbx1",
 				},
 				PodSupplement: 1, // sbx2 needs a pod but only normal pod available
-				PodsToRecycle: []string{},
 			},
 		},
 	}
