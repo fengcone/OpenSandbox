@@ -85,6 +85,7 @@ type PoolReconciler struct {
 	Recorder       record.EventRecorder
 	Allocator      Allocator
 	RestartTracker RestartTracker
+	RestartTimeout time.Duration
 }
 
 // +kubebuilder:rbac:groups=sandbox.opensandbox.io,resources=pools,verbs=get;list;watch;create;update;patch;delete
@@ -170,31 +171,40 @@ func (r *PoolReconciler) reconcilePool(ctx context.Context, pool *sandboxv1alpha
 			return err
 		}
 
-		// 2. Schedule and allocate
+		// 2. First, handle Pod Recycle to ensure pods are ready for scheduling
+		// We need to identify pods that need recycling first
+		needReconcile := false
+		delay := time.Duration(0)
+		recycling := 0
+		for _, pod := range pods {
+			if !needsRecycleConfirmation(pod) {
+				continue
+			}
+			recycling++
+			if err := r.handlePodRecycle(ctx, latestPool, pod); err != nil {
+				log.Error(err, "Failed to handle pod recycle", "pod", pod.Name)
+				return err
+			}
+			// After handling recycle, check if pod is now ready
+			// If pod was restarting but is now ready, we need to requeue to refresh cache
+			if pod.Labels[LabelPodDeallocatedFrom] == "" {
+				needReconcile = true
+				// Use a longer delay to allow cache to sync after pod update
+				// This is critical for controller-runtime cache consistency
+				delay = 3 * time.Second
+				log.Info("Pod recycle completed, requeuing to refresh cache", "pod", pod.Name, "delay", delay)
+			}
+		}
+
+		// 3. Schedule and allocate (after recycling is handled)
 		scheRes, err := r.scheduleSandbox(ctx, latestPool, batchSandboxes, pods)
 		if err != nil {
 			return err
 		}
-		needReconcile := false
-		delay := time.Duration(0)
+
 		if scheRes.supplySandbox > 0 && len(scheRes.idlePods) > 0 {
 			needReconcile = true
 			delay = defaultRetryTime
-		}
-		// 3. Handle Pod Recycle
-		podsToRecycleSet := utils.Convert2MapSet(scheRes.podsToRecycle)
-		for _, pod := range pods {
-			isNewRelease := podsToRecycleSet[pod.Name]
-			restarting := isRestarting(pod)
-			if !isNewRelease && !restarting {
-				continue
-			}
-			needReconcile = true
-			delay = defaultRetryTime
-			if err = r.handlePodRecycle(ctx, latestPool, pod); err != nil {
-				log.Error(err, "Failed to handle pod recycle", "pod", pod.Name)
-				return err
-			}
 		}
 		if int32(len(scheRes.idlePods)) >= scheRes.supplySandbox {
 			scheRes.supplySandbox = 0
@@ -226,20 +236,12 @@ func (r *PoolReconciler) reconcilePool(ctx context.Context, pool *sandboxv1alpha
 		}
 		latestIdlePods, deleteOld, supplyNew := r.updatePool(ctx, latestRevision, pods, scheRes.idlePods)
 
-		// Calculate restarting count for scaling decisions
-		restartingCnt := int32(0)
-		for _, pod := range pods {
-			if _, ok := scheRes.podAllocation[pod.Name]; !ok && isRestarting(pod) {
-				restartingCnt++
-			}
-		}
-
 		args := &scaleArgs{
 			latestRevision: latestRevision,
 			pool:           latestPool,
 			pods:           pods,
 			allocatedCnt:   int32(len(scheRes.podAllocation)),
-			restartingCnt:  restartingCnt,
+			recycling:      int32(recycling),
 			idlePods:       latestIdlePods,
 			redundantPods:  deleteOld,
 			supplyCnt:      scheRes.supplySandbox + supplyNew,
@@ -362,7 +364,7 @@ func (r *PoolReconciler) scheduleSandbox(ctx context.Context, pool *sandboxv1alp
 		if _, ok := status.PodAllocation[pod.Name]; ok {
 			continue
 		}
-		if isRestarting(pod) {
+		if !canAllocate(pod) {
 			continue
 		}
 		idlePods = append(idlePods, pod.Name)
@@ -414,7 +416,7 @@ type scaleArgs struct {
 	pool           *sandboxv1alpha1.Pool
 	pods           []*corev1.Pod
 	allocatedCnt   int32
-	restartingCnt  int32 // pods that are restarting and not available
+	recycling      int32 // pods that are restarting and not available
 	supplyCnt      int32 // to create
 	idlePods       []string
 	redundantPods  []string
@@ -431,11 +433,11 @@ func (r *PoolReconciler) scalePool(ctx context.Context, args *scaleArgs) error {
 	}
 	totalCnt := int32(len(args.pods))
 	allocatedCnt := args.allocatedCnt
-	restartingCnt := args.restartingCnt
+	recycling := args.recycling
 	supplyCnt := args.supplyCnt
 	redundantPods := args.redundantPods
 	// Buffer count excludes allocated and restarting pods
-	bufferCnt := totalCnt - allocatedCnt - restartingCnt
+	bufferCnt := totalCnt - allocatedCnt - recycling
 
 	// Calculate desired buffer cnt.
 	desiredBufferCnt := bufferCnt
@@ -452,7 +454,7 @@ func (r *PoolReconciler) scalePool(ctx context.Context, args *scaleArgs) error {
 	}
 
 	log.Info("Scale pool decision", "pool", pool.Name,
-		"totalCnt", totalCnt, "allocatedCnt", allocatedCnt, "restartingCnt", restartingCnt, "bufferCnt", bufferCnt,
+		"totalCnt", totalCnt, "allocatedCnt", allocatedCnt, "recycling", recycling, "bufferCnt", bufferCnt,
 		"desiredBufferCnt", desiredBufferCnt, "supplyCnt", supplyCnt,
 		"desiredTotalCnt", desiredTotalCnt, "redundantPods", len(redundantPods),
 		"idlePods", len(args.idlePods))
@@ -497,11 +499,12 @@ func (r *PoolReconciler) updatePoolStatus(ctx context.Context, latestRevision st
 			restartingCnt++
 			continue
 		}
-		// Only count as available if Running and ready
-		if pod.Status.Phase == corev1.PodRunning {
+		// Only count as available if Running AND can be allocated
+		// (e.g., no deallocated-from label blocking allocation)
+		if pod.Status.Phase == corev1.PodRunning && canAllocate(pod) {
 			availableCnt++
 		}
-		// Non-running, non-restarting pods are implicitly counted in Total - Allocated - Available - Restarting
+		// Non-running, non-restarting, or non-allocatable pods are implicitly counted in Total - Allocated - Available - Restarting
 	}
 
 	pool.Status.ObservedGeneration = pool.Generation
@@ -586,17 +589,40 @@ func (r *PoolReconciler) createPoolPod(ctx context.Context, pool *sandboxv1alpha
 // handlePodRecycle handles Pod recycle based on PodRecyclePolicy.
 // It should be called when a Pod is released from BatchSandbox.
 func (r *PoolReconciler) handlePodRecycle(ctx context.Context, pool *sandboxv1alpha1.Pool, pod *corev1.Pod) error {
+	log := logf.FromContext(ctx)
 	policy := sandboxv1alpha1.PodRecyclePolicyDelete
 	if pool.Spec.PodRecyclePolicy != "" {
 		policy = pool.Spec.PodRecyclePolicy
 	}
-	if policy == sandboxv1alpha1.PodRecyclePolicyRestart {
-		if r.RestartTracker == nil {
-			logf.FromContext(ctx).Error(nil, "RestartTracker not initialized, falling back to delete", "pod", pod.Name)
-			return r.Delete(ctx, pod)
+	timeout := r.RestartTimeout
+	if pool.Annotations != nil {
+		if timeoutSec := pool.Annotations[AnnoPodRecycleTimeoutSec]; timeoutSec != "" {
+			if sec, err := time.ParseDuration(timeoutSec + "s"); err != nil {
+				log.V(1).Error(err, "Failed to parse pod recycle timeout, use default timeout", "timeoutSec", timeoutSec)
+			} else {
+				timeout = sec
+			}
 		}
-		return r.RestartTracker.HandleRestart(ctx, pod)
+	}
+
+	if policy == sandboxv1alpha1.PodRecyclePolicyRestart {
+		return r.RestartTracker.HandleRestart(ctx, pod, timeout)
 	}
 	logf.FromContext(ctx).Info("Deleting Pod with Delete policy", "pod", pod.Name)
 	return r.Delete(ctx, pod)
+}
+
+// needsRecycleConfirmation checks if a pod needs recycle handling.
+func needsRecycleConfirmation(pod *corev1.Pod) bool {
+	deallocatedFrom := pod.Labels[LabelPodDeallocatedFrom]
+	if pod.Annotations[AnnoPodRecycleMeta] != "" {
+		return true
+	}
+	if deallocatedFrom == "" {
+		return false
+	}
+	// Has deallocated-from, check if recycle is confirmed
+	recycleConfirmed := pod.Labels[LabelPodRecycleConfirmed]
+	// Needs recycle if not confirmed, or confirmed for a different BatchSandbox
+	return recycleConfirmed != deallocatedFrom
 }

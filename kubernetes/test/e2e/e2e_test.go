@@ -980,21 +980,22 @@ var _ = Describe("Manager", Ordered, func() {
 			}, 30*time.Second).Should(Succeed())
 		})
 
-		It("should expire and return pooled BatchSandbox pods to pool", func() {
+		It("should expire and delete pods with Delete policy, then Pool replenishes", func() {
 			const poolName = "test-pool-for-expire"
 			const batchSandboxName = "test-bs-expire-pooled"
 			const testNamespace = "default"
 			const replicas = 1
+			const poolMin = 1
 
-			By("creating a Pool")
+			By("creating a Pool with Delete policy (default)")
 			poolYAML, err := renderTemplate("testdata/pool-basic.yaml", map[string]interface{}{
 				"PoolName":     poolName,
 				"SandboxImage": utils.SandboxImage,
 				"Namespace":    testNamespace,
-				"BufferMax":    3,
-				"BufferMin":    2,
-				"PoolMax":      5,
-				"PoolMin":      2,
+				"BufferMax":    1,
+				"BufferMin":    1,
+				"PoolMax":      2,
+				"PoolMin":      poolMin,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1015,12 +1016,6 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(totalStr).NotTo(BeEmpty())
 			}, 2*time.Minute).Should(Succeed())
-
-			By("recording Pool allocated count before BatchSandbox creation")
-			cmd = exec.Command("kubectl", "get", "pool", poolName, "-n", testNamespace,
-				"-o", "jsonpath={.status.allocated}")
-			allocatedBeforeBS, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
 
 			By("creating a pooled BatchSandbox with expireTime")
 			expireTime := time.Now().Add(45 * time.Second).UTC().Format(time.RFC3339)
@@ -1061,28 +1056,6 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(len(podNamesList)).To(BeNumerically(">", 0), "Should have allocated pods")
 			}, 2*time.Minute).Should(Succeed())
 
-			allocatedAfterBS := ""
-			By("verifying Pool allocated count increased after BatchSandbox allocation")
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pool", poolName, "-n", testNamespace,
-					"-o", "jsonpath={.status.allocated}")
-				_allocatedAfterBS, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				allocatedAfterBS = _allocatedAfterBS
-
-				before := 0
-				if allocatedBeforeBS != "" {
-					fmt.Sscanf(allocatedBeforeBS, "%d", &before)
-				}
-
-				after := 0
-				if _allocatedAfterBS != "" {
-					fmt.Sscanf(allocatedAfterBS, "%d", &after)
-				}
-
-				g.Expect(after).To(BeNumerically(">", before), "Pool allocated count should increase after BatchSandbox allocation")
-			}, 30*time.Second).Should(Succeed())
-
 			By("waiting for BatchSandbox to expire and be deleted")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "batchsandbox", batchSandboxName, "-n", testNamespace)
@@ -1091,34 +1064,28 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err.Error()).To(ContainSubstring("not found"))
 			}, 2*time.Minute).Should(Succeed())
 
-			By("verifying pods still exist and are returned to pool")
+			By("verifying pods are deleted (Delete policy)")
 			Eventually(func(g Gomega) {
 				for _, podName := range podNamesList {
-					cmd := exec.Command("kubectl", "get", "pod", podName, "-n", testNamespace,
-						"-o", "jsonpath={.metadata.name}")
+					cmd := exec.Command("kubectl", "get", "pod", podName, "-n", testNamespace, "--ignore-not-found")
 					output, err := utils.Run(cmd)
 					g.Expect(err).NotTo(HaveOccurred())
-					g.Expect(output).To(Equal(podName), "Pod should still exist")
+					g.Expect(output).To(BeEmpty(), "Pod %s should be deleted with Delete policy", podName)
 				}
 			}, 30*time.Second).Should(Succeed())
 
-			By("verifying Pool allocated count decreased after BatchSandbox expiration")
+			By("verifying Pool replenishes pods to meet poolMin")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pool", poolName, "-n", testNamespace,
-					"-o", "jsonpath={.status.allocated}")
-				allocatedAfterExpiration, err := utils.Run(cmd)
+					"-o", "jsonpath={.status.total}")
+				totalStr, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-
-				before := 0
-				if allocatedAfterBS != "" {
-					fmt.Sscanf(allocatedAfterBS, "%d", &before)
+				total := 0
+				if totalStr != "" {
+					fmt.Sscanf(totalStr, "%d", &total)
 				}
-				after := 0
-				if allocatedAfterExpiration != "" {
-					fmt.Sscanf(allocatedAfterExpiration, "%d", &after)
-				}
-				g.Expect(after).To(BeNumerically("<", before), "Allocated count should decrease")
-			}, 30*time.Second).Should(Succeed())
+				g.Expect(total).To(BeNumerically(">=", poolMin), "Pool should replenish pods to meet poolMin=%d", poolMin)
+			}, 2*time.Minute).Should(Succeed())
 
 			By("cleaning up Pool")
 			cmd = exec.Command("kubectl", "delete", "pool", poolName, "-n", testNamespace)

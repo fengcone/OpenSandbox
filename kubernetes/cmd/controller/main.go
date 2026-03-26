@@ -266,13 +266,14 @@ func main() {
 		os.Exit(1)
 	}
 	kubeClient := kubernetes.NewForConfigOrDie(mgr.GetConfig())
-	restartTracker := controller.NewRestartTracker(mgr.GetClient(), kubeClient, mgr.GetConfig(), restartTimeout)
+	restartTracker := controller.NewRestartTracker(mgr.GetClient(), kubeClient, mgr.GetConfig())
 	if err := (&controller.PoolReconciler{
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
 		Recorder:       mgr.GetEventRecorderFor("pool-controller"),
 		Allocator:      controller.NewDefaultAllocator(mgr.GetClient()),
 		RestartTracker: restartTracker,
+		RestartTimeout: restartTimeout,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Pool")
 		os.Exit(1)

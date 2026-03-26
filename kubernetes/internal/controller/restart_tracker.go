@@ -48,34 +48,30 @@ const (
 //	    all restarted & ready → None (clear annotation, reuse)
 //	    timeout / CrashLoop   → delete Pod
 type restartTracker struct {
-	client         client.Client
-	kubeClient     kubernetes.Interface
-	restConfig     *rest.Config
-	restartTimeout time.Duration
+	client     client.Client
+	kubeClient kubernetes.Interface
+	restConfig *rest.Config
 }
 
 type RestartTracker interface {
-	HandleRestart(ctx context.Context, pod *corev1.Pod) error
+	HandleRestart(ctx context.Context, pod *corev1.Pod, timeout time.Duration) error
 }
 
 // NewRestartTracker creates a new restartTracker with custom restart timeout.
-func NewRestartTracker(c client.Client, kubeClient kubernetes.Interface, restConfig *rest.Config, restartTimeout time.Duration) RestartTracker {
+func NewRestartTracker(c client.Client, kubeClient kubernetes.Interface, restConfig *rest.Config) RestartTracker {
 	r := &restartTracker{
-		client:         c,
-		kubeClient:     kubeClient,
-		restConfig:     restConfig,
-		restartTimeout: restartTimeout,
+		client:     c,
+		kubeClient: kubeClient,
+		restConfig: restConfig,
 	}
-	if r.restartTimeout == 0 {
-		r.restartTimeout = defaultRestartTimeout
-	}
+
 	return r
 }
 
 // HandleRestart handles the Restart recycle policy for a Pod.
 // If the Pod has already been triggered for restart, it checks the restart status.
 // Otherwise, it initializes the restart and kicks off a fire-and-forget kill goroutine.
-func (t *restartTracker) HandleRestart(ctx context.Context, pod *corev1.Pod) error {
+func (t *restartTracker) HandleRestart(ctx context.Context, pod *corev1.Pod, timeout time.Duration) error {
 	log := logf.FromContext(ctx)
 	// Parse existing meta
 	meta, err := parsePodRecycleMeta(pod)
@@ -85,23 +81,38 @@ func (t *restartTracker) HandleRestart(ctx context.Context, pod *corev1.Pod) err
 	}
 	// If already triggered, check restart progress
 	if meta.TriggeredAt > 0 && meta.State == RecycleStateRestarting {
-		return t.checkRestartStatus(ctx, pod)
+		return t.checkRestartStatus(ctx, pod, timeout)
 	}
 
 	meta.TriggeredAt = time.Now().UnixMilli()
 	meta.State = RecycleStateRestarting
-	meta.InitialRestartCounts = make(map[string]int32)
-	for _, container := range pod.Status.ContainerStatuses {
-		meta.InitialRestartCounts[container.Name] = container.RestartCount
-	}
 	if err = t.updatePodRecycleMeta(ctx, pod, meta); err != nil {
 		log.Error(err, "Failed to update recycle meta", "pod", pod.Name)
 		return err
 	}
 	// Fire-and-forget: kill containers in background.
+	// This is done after updating the annotation to ensure the restart is tracked.
 	t.killPodContainers(ctx, pod)
-	log.Info("Triggered restart for Pod", "pod", pod.Name)
+	log.Info("Triggered restart for Pod", "pod", pod.Name, "triggeredAt", meta.TriggeredAt)
 	return nil
+}
+
+// updatePodRecycleMeta updates the recycle metadata to Pod annotations and sets the recycle-confirmed label.
+// It reads the deallocated-from label value and sets it as recycle-confirmed label.
+func (t *restartTracker) updatePodRecycleMeta(ctx context.Context, pod *corev1.Pod, meta *PodRecycleMeta) error {
+	old := pod.DeepCopy()
+	setPodRecycleMeta(pod, meta)
+
+	// Set recycle-confirmed label from deallocated-from label value
+	if deallocatedFrom := pod.Labels[LabelPodDeallocatedFrom]; deallocatedFrom != "" {
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string)
+		}
+		pod.Labels[LabelPodRecycleConfirmed] = deallocatedFrom
+	}
+
+	patch := client.MergeFrom(old)
+	return t.client.Patch(ctx, pod, patch)
 }
 
 // killPodContainers kills all containers in the Pod (excluding initContainers)
@@ -175,7 +186,7 @@ func (t *restartTracker) executeExec(ctx context.Context, pod *corev1.Pod, conta
 }
 
 // checkRestartStatus checks if the Pod has completed restart and is ready to be reused.
-func (t *restartTracker) checkRestartStatus(ctx context.Context, pod *corev1.Pod) error {
+func (t *restartTracker) checkRestartStatus(ctx context.Context, pod *corev1.Pod, timeout time.Duration) error {
 	log := logf.FromContext(ctx)
 
 	meta, err := parsePodRecycleMeta(pod)
@@ -187,70 +198,60 @@ func (t *restartTracker) checkRestartStatus(ctx context.Context, pod *corev1.Pod
 	elapsed := time.Duration(time.Now().UnixMilli()-meta.TriggeredAt) * time.Millisecond
 
 	allRestarted := true
-	allReady := true
+	triggerAt := time.UnixMilli(meta.TriggeredAt)
 	for _, container := range pod.Status.ContainerStatuses {
-		initialCount, exists := meta.InitialRestartCounts[container.Name]
-		if !exists || container.RestartCount <= initialCount {
-			allRestarted = false
+		restarted := false
+		running := container.State.Running
+		if running != nil && running.StartedAt.Time.After(triggerAt) {
+			restarted = true
+			log.Info("Container restarted detected by start time after trigger",
+				"pod", pod.Name, "container", container.Name,
+				"trigger", triggerAt, "current", running.StartedAt.Time)
 		}
-		if !container.Ready {
-			allReady = false
+		if !restarted || !container.Ready {
+			allRestarted = false
 		}
 	}
 
 	podReady := utils.IsPodReady(pod)
-	if allRestarted && allReady && podReady {
-		if err := t.clearPodRecycleMeta(ctx, pod); err != nil {
+	if allRestarted && podReady {
+		if err = t.clearPodRecycleMeta(ctx, pod); err != nil {
 			return err
 		}
 		log.Info("Pod restart completed, ready for reuse", "pod", pod.Name, "elapsed", elapsed)
-		return nil
+		// Trigger requeue to ensure subsequent checks see the updated pod state.
+		// This prevents race conditions where another reconcile reads stale cached data.
 	}
-
-	if isCrashLoopBackOff(pod) {
-		log.Info("Pod entered CrashLoopBackOff during restart, deleting", "pod", pod.Name)
-		return t.client.Delete(ctx, pod)
+	restartTimeout := timeout
+	if restartTimeout == 0 {
+		restartTimeout = defaultRestartTimeout
 	}
-
-	if elapsed > t.restartTimeout {
+	if elapsed > restartTimeout {
 		log.Info("Pod restart timeout, deleting", "pod", pod.Name,
-			"elapsed", elapsed, "timeout", t.restartTimeout,
-			"allRestarted", allRestarted, "allReady", allReady)
+			"elapsed", elapsed, "timeout", restartTimeout,
+			"allRestarted", allRestarted)
 		return t.client.Delete(ctx, pod)
 	}
-
-	log.V(1).Info("Pod still restarting", "pod", pod.Name, "elapsed", elapsed,
-		"allRestarted", allRestarted, "allReady", allReady, "podReady", podReady)
+	log.Info("Pod still restarting", "pod", pod.Name, "elapsed", elapsed,
+		"allRestarted", allRestarted, "podReady", podReady)
 	return nil
 }
 
-// updatePodRecycleMeta updates the recycle metadata to Pod annotations.
-func (t *restartTracker) updatePodRecycleMeta(ctx context.Context, pod *corev1.Pod, meta *PodRecycleMeta) error {
-	old := pod.DeepCopy()
-	setPodRecycleMeta(pod, meta)
-	patch := client.MergeFrom(old)
-	return t.client.Patch(ctx, pod, patch)
-}
-
-// isCrashLoopBackOff checks if the Pod is in CrashLoopBackOff state.
-func isCrashLoopBackOff(pod *corev1.Pod) bool {
-	for _, container := range pod.Status.ContainerStatuses {
-		if container.State.Waiting != nil {
-			if container.State.Waiting.Reason == "CrashLoopBackOff" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// clearPodRecycleMeta clears the recycle metadata annotation from Pod.
+// clearPodRecycleMeta clears the recycle metadata annotation from Pod and the deallocated-from label.
+// It keeps the recycle-confirmed label as a receipt that recycling was processed.
+// After successful patch, it re-fetches the pod to ensure the local object reflects the latest state.
 func (t *restartTracker) clearPodRecycleMeta(ctx context.Context, pod *corev1.Pod) error {
 	old := pod.DeepCopy()
-	anno := pod.GetAnnotations()
-	if anno != nil {
-		delete(anno, AnnoPodRecycleMeta)
+	if pod.Annotations != nil {
+		delete(pod.Annotations, AnnoPodRecycleMeta)
 	}
+	if pod.Labels != nil {
+		delete(pod.Labels, LabelPodDeallocatedFrom)
+	}
+
 	patch := client.MergeFrom(old)
-	return t.client.Patch(ctx, pod, patch)
+	if err := t.client.Patch(ctx, pod, patch); err != nil {
+		return err
+	}
+	return nil
 }

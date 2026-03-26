@@ -123,18 +123,31 @@ func (r *BatchSandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// handle finalizers
 	if batchSbx.DeletionTimestamp == nil {
+		// Add FinalizerTaskCleanup if task scheduling is needed
 		if taskStrategy.NeedTaskScheduling() {
-			if !controllerutil.ContainsFinalizer(batchSbx, FinalizerTaskCleanup) {
-				err := utils.UpdateFinalizer(r.Client, batchSbx, utils.AddFinalizerOpType, FinalizerTaskCleanup)
-				if err != nil {
-					log.Error(err, "failed to add finalizer", "finalizer", FinalizerTaskCleanup)
-				} else {
-					log.Info("added finalizer", "finalizer", FinalizerTaskCleanup)
-				}
+			if added, err := r.ensureFinalizer(ctx, batchSbx, FinalizerTaskCleanup); err != nil || !added {
+				return ctrl.Result{}, err
+			}
+		}
+		// Add FinalizerPoolRecycle for pool mode with Restart policy
+		if poolStrategy.IsPooledMode() {
+			if added, err := r.ensureFinalizer(ctx, batchSbx, FinalizerPoolRecycle); err != nil || !added {
 				return ctrl.Result{}, err
 			}
 		}
 	} else {
+		// Handle deletion: FinalizerPoolRecycle first, then FinalizerTaskCleanup
+		// After pool recycle, handle task cleanup if needed
+		if !controllerutil.ContainsFinalizer(batchSbx, FinalizerTaskCleanup) {
+			// Handle pool recycle must after task cleanup
+			needReconcile, err := r.handlePoolRecycle(ctx, batchSbx)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if needReconcile {
+				return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+			}
+		}
 		if !taskStrategy.NeedTaskScheduling() {
 			return ctrl.Result{}, nil
 		}
@@ -464,7 +477,6 @@ func (r *BatchSandboxReconciler) scaleBatchSandbox(ctx context.Context, batchSan
 	for i := range pods {
 		pod := pods[i]
 		BatchSandboxScaleExpectations.ObserveScale(controllerutils.GetControllerKey(batchSandbox), expectations.Create, pod.Name)
-		pods = append(pods, pod)
 		idx, err := parseIndex(pod)
 		if err != nil {
 			return fmt.Errorf("failed to parse idx Pod %s, err %w", pod.Name, err)
@@ -556,4 +568,121 @@ func (r *BatchSandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Pod{}).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 32}).
 		Complete(r)
+}
+
+// ensureFinalizer ensures the given finalizer is present on the object.
+// Returns (true, nil) if finalizer was already present, (false, nil) if finalizer was added successfully,
+// or (false, err) if an error occurred.
+func (r *BatchSandboxReconciler) ensureFinalizer(ctx context.Context, batchSbx *sandboxv1alpha1.BatchSandbox, finalizer string) (bool, error) {
+	log := logf.FromContext(ctx)
+	if controllerutil.ContainsFinalizer(batchSbx, finalizer) {
+		return true, nil
+	}
+	err := utils.UpdateFinalizer(r.Client, batchSbx, utils.AddFinalizerOpType, finalizer)
+	if err != nil {
+		log.Error(err, "failed to add finalizer", "finalizer", finalizer)
+		return false, err
+	}
+	log.Info("added finalizer", "finalizer", finalizer)
+	return false, nil
+}
+
+// checkPoolRecycleFinalizer checks if all pods are recycled or confirmed.
+// Returns true if Finalizer can be removed.
+func (r *BatchSandboxReconciler) checkPoolRecycleFinalizer(ctx context.Context, bsx *sandboxv1alpha1.BatchSandbox) (bool, error) {
+	alloc, err := parseSandboxAllocation(bsx)
+	if err != nil {
+		return false, err
+	}
+
+	for _, podName := range alloc.Pods {
+		pod := &corev1.Pod{}
+		err := r.Get(ctx, types.NamespacedName{Namespace: bsx.Namespace, Name: podName}, pod)
+		if errors.IsNotFound(err) {
+			continue // Pod deleted, OK
+		}
+		if err != nil {
+			return false, err
+		}
+
+		// Check if recycle is confirmed
+		confirmedUID := pod.Labels[LabelPodRecycleConfirmed]
+		if confirmedUID != string(bsx.UID) {
+			// Not yet confirmed, keep waiting
+			return false, nil
+		}
+	}
+	// All pods confirmed or deleted
+	return true, nil
+}
+
+// addDeallocatedFromLabel adds deallocated-from label to pods.
+func (r *BatchSandboxReconciler) addDeallocatedFromLabel(ctx context.Context, bsx *sandboxv1alpha1.BatchSandbox) error {
+	alloc, err := parseSandboxAllocation(bsx)
+	if err != nil {
+		return err
+	}
+
+	for _, podName := range alloc.Pods {
+		pod := &corev1.Pod{}
+		err = r.Get(ctx, types.NamespacedName{Namespace: bsx.Namespace, Name: podName}, pod)
+		if errors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if pod.Labels[LabelPodRecycleConfirmed] == string(bsx.UID) {
+			continue
+		}
+		// Check if label already exists with correct value
+		if pod.Labels[LabelPodDeallocatedFrom] == string(bsx.UID) {
+			continue
+		}
+		// Add label
+		old := pod.DeepCopy()
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string)
+		}
+		pod.Labels[LabelPodDeallocatedFrom] = string(bsx.UID)
+		patch := client.MergeFrom(old)
+		if err = r.Patch(ctx, pod, patch); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *BatchSandboxReconciler) handlePoolRecycle(ctx context.Context, batchSbx *sandboxv1alpha1.BatchSandbox) (needReconcile bool, err error) {
+	log := logf.FromContext(ctx)
+	if !controllerutil.ContainsFinalizer(batchSbx, FinalizerPoolRecycle) {
+		return false, nil
+	}
+	if err := r.addDeallocatedFromLabel(ctx, batchSbx); err != nil {
+		log.Error(err, "failed to add deallocated-from label")
+		return false, err
+	}
+
+	// Check if all pods are recycled or confirmed
+	allRecycled, err := r.checkPoolRecycleFinalizer(ctx, batchSbx)
+	if err != nil {
+		log.Error(err, "failed to check pool recycle finalizer")
+		return false, err
+	}
+
+	if !allRecycled {
+		log.Info("waiting for pods to be recycled")
+		// Requeue to check again
+		return true, nil
+	}
+
+	err = utils.UpdateFinalizer(r.Client, batchSbx, utils.RemoveFinalizerOpType, FinalizerPoolRecycle)
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			log.Error(err, "failed to remove finalizer", "finalizer", FinalizerPoolRecycle)
+		}
+		return false, err
+	}
+	log.Info("pool recycle completed, removed finalizer", "finalizer", FinalizerPoolRecycle)
+	return false, nil
 }

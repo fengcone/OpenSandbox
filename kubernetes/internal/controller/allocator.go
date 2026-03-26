@@ -214,7 +214,6 @@ func NewDefaultAllocator(client client.Client) Allocator {
 
 func (allocator *defaultAllocator) Schedule(ctx context.Context, spec *AllocSpec) (*AllocStatus, []SandboxSyncInfo, bool, error) {
 	log := logf.FromContext(ctx)
-	log.Info("Schedule started", "pool", spec.Pool.Name, "totalPods", len(spec.Pods), "sandboxes", len(spec.Sandboxes))
 	status, err := allocator.initAllocation(ctx, spec)
 	if err != nil {
 		return nil, nil, false, err
@@ -224,15 +223,14 @@ func (allocator *defaultAllocator) Schedule(ctx context.Context, spec *AllocSpec
 		if _, ok := status.PodAllocation[pod.Name]; ok {
 			continue
 		}
-		if pod.Status.Phase != corev1.PodRunning {
+		if !canAllocate(pod) {
 			continue
 		}
-		if isRestarting(pod) {
+		if pod.Status.Phase != corev1.PodRunning {
 			continue
 		}
 		availablePods = append(availablePods, pod.Name)
 	}
-	log.V(1).Info("Schedule init", "existingAllocations", len(status.PodAllocation), "availablePods", len(availablePods))
 	sandboxToPods := make(map[string][]string)
 	for podName, sandboxName := range status.PodAllocation {
 		sandboxToPods[sandboxName] = append(sandboxToPods[sandboxName], podName)

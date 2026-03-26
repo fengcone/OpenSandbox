@@ -299,6 +299,73 @@ func TestAllocatorSchedule(t *testing.T) {
 				PodsToRecycle: []string{"pod1"},
 			},
 		},
+		{
+			name: "pod with deallocated-from label is excluded",
+			spec: &AllocSpec{
+				Pods: []*corev1.Pod{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "pod-normal",
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "pod-deallocated",
+							Labels: map[string]string{
+								"pool.opensandbox.io/deallocated-from": "bsx-uid-123",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+						},
+					},
+				},
+				Pool: &sandboxv1alpha1.Pool{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "pool1",
+					},
+				},
+				Sandboxes: []*sandboxv1alpha1.BatchSandbox{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "sbx1",
+						},
+						Spec: sandboxv1alpha1.BatchSandboxSpec{
+							PoolRef:  "pool1",
+							Replicas: &replica1,
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "sbx2",
+						},
+						Spec: sandboxv1alpha1.BatchSandboxSpec{
+							PoolRef:  "pool1",
+							Replicas: &replica1,
+						},
+					},
+				},
+			},
+			poolAlloc: &PoolAllocation{
+				PodAllocation: map[string]string{},
+			},
+			sandboxAlloc: &SandboxAllocation{
+				Pods: []string{},
+			},
+			release: &AllocationRelease{
+				Pods: []string{},
+			},
+			wantStatus: &AllocStatus{
+				PodAllocation: map[string]string{
+					"pod-normal": "sbx1",
+				},
+				PodSupplement: 1, // sbx2 needs a pod but only normal pod available
+				PodsToRecycle: []string{},
+			},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
