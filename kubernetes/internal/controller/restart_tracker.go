@@ -116,8 +116,8 @@ func (t *restartTracker) updatePodRecycleMeta(ctx context.Context, pod *corev1.P
 func (t *restartTracker) killPodContainers(ctx context.Context, pod *corev1.Pod) {
 	log := logf.FromContext(ctx)
 	for _, container := range pod.Spec.Containers {
-		go func(cName string, ctx context.Context) {
-			killCtx, cancel := context.WithTimeout(ctx, killTimeout)
+		go func(cName string) {
+			killCtx, cancel := context.WithTimeout(context.Background(), killTimeout)
 			defer cancel()
 
 			if err := t.execGracefulKill(killCtx, pod, cName); err != nil {
@@ -126,7 +126,7 @@ func (t *restartTracker) killPodContainers(ctx context.Context, pod *corev1.Pod)
 			} else {
 				log.V(1).Info("Successfully triggered graceful kill", "pod", pod.Name, "container", cName)
 			}
-		}(container.Name, ctx)
+		}(container.Name)
 	}
 }
 
