@@ -492,7 +492,7 @@ func (r *PoolReconciler) updatePoolStatus(ctx context.Context, latestRevision st
 		if _, ok := podAllocation[pod.Name]; ok {
 			continue
 		}
-		if pod.Status.Phase != corev1.PodRunning {
+		if !isPodReady(pod) {
 			continue
 		}
 		availableCnt++
@@ -648,4 +648,16 @@ func (r *PoolReconciler) filterEvictingPods(ctx context.Context, pool *sandboxv1
 		filtered = append(filtered, pod)
 	}
 	return filtered
+}
+
+func isPodReady(pod *corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
