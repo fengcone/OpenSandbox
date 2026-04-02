@@ -105,6 +105,10 @@ func main() {
 	flag.Float64Var(&kubeClientQPS, "kube-client-qps", 100, "QPS for Kubernetes client rate limiter.")
 	flag.IntVar(&kubeClientBurst, "kube-client-burst", 200, "Burst for Kubernetes client rate limiter.")
 
+	// Commit executor image
+	var commitExecutorImage string
+	flag.StringVar(&commitExecutorImage, "commit-executor-image", "commit-executor:dev", "The image used for commit operations (contains ctr/crictl tools).")
+
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 
@@ -266,6 +270,15 @@ func main() {
 		Allocator: controller.NewDefaultAllocator(mgr.GetClient()),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Pool")
+		os.Exit(1)
+	}
+	if err := (&controller.SandboxSnapshotReconciler{
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		Recorder:            mgr.GetEventRecorderFor("sandboxsnapshot-controller"),
+		CommitExecutorImage: commitExecutorImage,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "SandboxSnapshot")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

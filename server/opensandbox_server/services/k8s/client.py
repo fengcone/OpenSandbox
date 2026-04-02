@@ -255,6 +255,27 @@ class K8sClient:
             body=body,
         )
 
+    def patch_custom_object_status(
+        self,
+        group: str,
+        version: str,
+        namespace: str,
+        plural: str,
+        name: str,
+        body: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Patch the status subresource of a namespaced custom resource."""
+        if self._write_limiter:
+            self._write_limiter.acquire()
+        return self.get_custom_objects_api().patch_namespaced_custom_object_status(
+            group=group,
+            version=version,
+            namespace=namespace,
+            plural=plural,
+            name=name,
+            body=body,
+        )
+
     # ------------------------------------------------------------------
     # Secret operations
     # ------------------------------------------------------------------

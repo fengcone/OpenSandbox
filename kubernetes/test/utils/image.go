@@ -25,6 +25,10 @@ var (
 	// Can be overridden via TASK_EXECUTOR_IMG env var
 	TaskExecutorImage = getEnv("TASK_EXECUTOR_IMG", "task-executor:dev")
 
+	// CommitExecutorImage is the commit-executor image
+	// Can be overridden via COMMIT_EXECUTOR_IMG env var
+	CommitExecutorImage = getEnv("COMMIT_EXECUTOR_IMG", "commit-executor:dev")
+
 	// SandboxImage is the image used for sandbox containers in tests
 	// Always uses TaskExecutorImage to ensure the image is available in Kind
 	SandboxImage = TaskExecutorImage

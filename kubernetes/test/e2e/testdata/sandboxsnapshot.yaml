@@ -1,0 +1,23 @@
+apiVersion: sandbox.opensandbox.io/v1alpha1
+kind: SandboxSnapshot
+metadata:
+  name: {{.SnapshotName}}
+  namespace: {{.Namespace}}
+spec:
+  sandboxId: {{.SandboxId}}
+  snapshotType: Rootfs
+  sourceBatchSandboxName: {{.SourceBatchSandboxName}}
+  sourcePodName: {{.SourcePodName}}
+  sourceContainerName: sandbox
+  sourceNodeName: {{.SourceNodeName}}
+  imageUri: {{.ImageUri}}
+  snapshotPushSecretName: {{.SnapshotPushSecretName}}
+  resumeImagePullSecretName: {{.ResumeImagePullSecretName}}
+  resumeTemplate:
+    template:
+      spec:
+        containers:
+        - name: sandbox
+          image: {{.SandboxImage}}
+          command: ["sh", "-c", "echo 'Hello from sandbox' && sleep 3600"]
+  pausedAt: {{.PausedAt}}

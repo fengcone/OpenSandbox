@@ -50,7 +50,10 @@ from opensandbox_server.services.constants import (
     SandboxErrorCodes,
 )
 from opensandbox_server.services.endpoint_auth import generate_egress_token
-from opensandbox_server.services.endpoint_auth import build_egress_auth_headers, merge_endpoint_headers
+from opensandbox_server.services.endpoint_auth import (
+    build_egress_auth_headers,
+    merge_endpoint_headers,
+)
 from opensandbox_server.services.helpers import matches_filter
 from opensandbox_server.services.extension_service import ExtensionService
 from opensandbox_server.services.sandbox_service import SandboxService
@@ -65,6 +68,7 @@ from opensandbox_server.services.validators import (
 )
 from opensandbox_server.services.k8s.client import K8sClient
 from opensandbox_server.services.k8s.provider_factory import create_workload_provider
+from opensandbox_server.services.k8s.sandboxsnapshot_provider import SandboxSnapshotProvider
 
 logger = logging.getLogger(__name__)
 
@@ -72,35 +76,35 @@ logger = logging.getLogger(__name__)
 class KubernetesSandboxService(SandboxService, ExtensionService):
     """
     Kubernetes-based implementation of SandboxService.
-    
+
     This class implements sandbox lifecycle operations using Kubernetes resources.
     """
-    
+
     def __init__(self, config: Optional[AppConfig] = None):
         """
         Initialize Kubernetes sandbox service.
-        
+
         Args:
             config: Application configuration
-            
+
         Raises:
             HTTPException: If initialization fails
         """
         self.app_config = config or get_config()
         runtime_config = self.app_config.runtime
-        
+
         if runtime_config.type != "kubernetes":
             raise ValueError("KubernetesSandboxService requires runtime.type = 'kubernetes'")
-        
+
         if not self.app_config.kubernetes:
             raise ValueError("Kubernetes configuration is required")
-        
+
         # Ingress configuration (direct/gateway) if provided
         self.ingress_config = self.app_config.ingress
 
         self.namespace = self.app_config.kubernetes.namespace
         self.execd_image = runtime_config.execd_image
-        
+
         # Initialize Kubernetes client
         try:
             self.k8s_client = K8sClient(self.app_config.kubernetes)
@@ -114,7 +118,7 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                     "message": f"Failed to initialize Kubernetes client: {str(e)}",
                 },
             ) from e
-        
+
         # Initialize workload provider
         provider_type = self.app_config.kubernetes.workload_provider
         try:
@@ -135,13 +139,16 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                     "message": f"Invalid workload provider configuration: {str(e)}",
                 },
             ) from e
-        
+
+        # Initialize snapshot provider for pause/resume
+        self.snapshot_provider = SandboxSnapshotProvider(self.k8s_client)
+
         logger.info(
             "KubernetesSandboxService initialized: namespace=%s, execd_image=%s",
             self.namespace,
             self.execd_image,
         )
-    
+
     async def _wait_for_sandbox_ready(
         self,
         sandbox_id: str,
@@ -150,26 +157,26 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
     ) -> Dict[str, Any]:
         """
         Wait for Pod to be Running and have an IP address.
-        
+
         Args:
             sandbox_id: Sandbox ID
             timeout_seconds: Maximum time to wait in seconds
             poll_interval_seconds: Time between polling attempts
-            
+
         Returns:
             Workload dict when Pod is Running with IP
-            
+
         Raises:
             HTTPException: If timeout or Pod fails
         """
         logger.info(
             f"Waiting for sandbox {sandbox_id} to be Running with IP (timeout: {timeout_seconds}s)"
         )
-        
+
         start_time = time.time()
         last_state = None
         last_message = None
-        
+
         while time.time() - start_time < timeout_seconds:
             try:
                 # Get current workload status
@@ -177,40 +184,35 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                     sandbox_id=sandbox_id,
                     namespace=self.namespace,
                 )
-                
+
                 if not workload:
                     logger.debug(f"Workload not found yet for sandbox {sandbox_id}")
                     time.sleep(poll_interval_seconds)
                     continue
-                
+
                 # Get status
                 status_info = self.workload_provider.get_status(workload)
                 current_state = status_info["state"]
                 current_message = status_info["message"]
-                
+
                 # Log state changes
                 if current_state != last_state or current_message != last_message:
-                    logger.info(
-                        f"Sandbox {sandbox_id} state: {current_state} - {current_message}"
-                    )
+                    logger.info(f"Sandbox {sandbox_id} state: {current_state} - {current_message}")
                     last_state = current_state
                     last_message = current_message
-                
+
                 # Check if Running or Allocated (IP assigned)
                 if current_state in ("Running", "Allocated"):
                     return workload
-                
+
             except HTTPException:
                 raise
             except Exception as e:
-                logger.warning(
-                    f"Error checking sandbox {sandbox_id} status: {e}",
-                    exc_info=True
-                )
-            
+                logger.warning(f"Error checking sandbox {sandbox_id} status: {e}", exc_info=True)
+
             # Wait before next poll
             await asyncio.sleep(poll_interval_seconds)
-        
+
         # Timeout
         elapsed = time.time() - start_time
         raise HTTPException(
@@ -223,11 +225,11 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                 ),
             },
         )
-    
+
     def _ensure_network_policy_support(self, request: CreateSandboxRequest) -> None:
         """
         Validate that network policy can be honored under the current runtime config.
-        
+
         This validates that egress.image is configured when network_policy is provided.
         """
         # Common validation: egress.image must be configured
@@ -257,15 +259,15 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
     async def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
         """
         Create a new sandbox using Kubernetes Pod.
-        
+
         Wait for the Pod to be Running and have an IP address before returning.
-        
+
         Args:
             request: Sandbox creation request.
-            
+
         Returns:
             CreateSandboxResponse: Created sandbox information with Running state
-            
+
         Raises:
             HTTPException: If creation fails, timeout, or invalid parameters
         """
@@ -278,10 +280,10 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
         )
         self._ensure_network_policy_support(request)
         self._ensure_image_auth_support(request)
-        
+
         # Generate sandbox ID
         sandbox_id = self.generate_sandbox_id()
-        
+
         # Calculate expiration time (None = no TTL, manual cleanup only; same as Docker)
         created_at = datetime.now(timezone.utc)
         expires_at = None
@@ -295,22 +297,18 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
         annotations: Dict[str, str] = {}
         if expires_at is None:
             labels[SANDBOX_MANUAL_CLEANUP_LABEL] = "true"
-        
+
         # Add user metadata as labels
         if request.metadata:
             labels.update(request.metadata)
-        
+
         # Extract resource limits
         resource_limits = {}
         if request.resource_limits and request.resource_limits.root:
             resource_limits = request.resource_limits.root
-        
+
         try:
-            egress_mode = (
-                self.app_config.egress.mode
-                if self.app_config.egress
-                else EGRESS_MODE_DNS
-            )
+            egress_mode = self.app_config.egress.mode if self.app_config.egress else EGRESS_MODE_DNS
             # Get egress image if network policy is provided
             egress_image = None
             egress_auth_token = None
@@ -326,7 +324,7 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                 request.volumes,
                 self.app_config.storage.allowed_host_paths or None,
             )
-            
+
             # Create workload
             workload_info = self.workload_provider.create_workload(
                 sandbox_id=sandbox_id,
@@ -346,13 +344,13 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                 egress_mode=egress_mode,
                 volumes=request.volumes,
             )
-            
+
             logger.info(
                 "Created sandbox: id=%s, workload=%s",
                 sandbox_id,
                 workload_info.get("name"),
             )
-            
+
             # Wait for Pod to be Running with IP
             try:
                 workload = await self._wait_for_sandbox_ready(
@@ -360,10 +358,10 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                     timeout_seconds=self.app_config.kubernetes.sandbox_create_timeout_seconds,
                     poll_interval_seconds=self.app_config.kubernetes.sandbox_create_poll_interval_seconds,
                 )
-                
+
                 # Get final status
                 status_info = self.workload_provider.get_status(workload)
-                
+
                 # Build and return response with Running state
                 return CreateSandboxResponse(
                     id=sandbox_id,
@@ -379,7 +377,7 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                     image=request.image,
                     entrypoint=request.entrypoint,
                 )
-                
+
             except HTTPException as e:
                 try:
                     logger.error(f"Creation failed, cleaning up sandbox {sandbox_id}: {e}")
@@ -387,7 +385,7 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                 except Exception as cleanup_ex:
                     logger.error(f"Failed to cleanup sandbox {sandbox_id}", exc_info=cleanup_ex)
                 raise
-            
+
         except HTTPException:
             raise
         except ValueError as e:
@@ -409,27 +407,35 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                     "message": f"Failed to create sandbox: {str(e)}",
                 },
             ) from e
-    
+
     def get_sandbox(self, sandbox_id: str) -> Sandbox:
         """
         Get sandbox by ID.
-        
+
+        Aggregates state from both BatchSandbox and SnapshotSnapshot resources.
+
         Args:
             sandbox_id: Unique sandbox identifier
-            
+
         Returns:
             Sandbox: Sandbox information
-            
+
         Raises:
             HTTPException: If sandbox not found
         """
         try:
-            workload = self.workload_provider.get_workload(
+            # Get both BatchSandbox and Snapshot for state aggregation
+            batchsandbox = self.workload_provider.get_workload(
                 sandbox_id=sandbox_id,
                 namespace=self.namespace,
             )
-            
-            if not workload:
+            snapshot = self.snapshot_provider.get_snapshot(sandbox_id, self.namespace)
+
+            # Derive aggregated state
+            state, reason, message = self._derive_sandbox_state(batchsandbox, snapshot)
+
+            # Handle not found case
+            if state == "NotFound":
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail={
@@ -437,9 +443,61 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                         "message": f"Sandbox '{sandbox_id}' not found",
                     },
                 )
-            
-            return self._build_sandbox_from_workload(workload)
-            
+
+            # Build Sandbox from BatchSandbox if available
+            if batchsandbox:
+                sandbox = self._build_sandbox_from_workload(batchsandbox)
+                # Override status with aggregated state
+                sandbox.status.state = state
+                sandbox.status.reason = reason
+                sandbox.status.message = message
+                return sandbox
+
+            # Paused state: build from snapshot
+            if snapshot:
+                metadata = snapshot.get("metadata", {})
+                labels = metadata.get("labels", {})
+                creation_timestamp = metadata.get("creationTimestamp")
+                spec = snapshot.get("spec", {})
+
+                # Extract user metadata
+                user_metadata = {
+                    k: v for k, v in labels.items() if not k.startswith("opensandbox.io/")
+                }
+
+                # Get image URI from snapshot spec (from ContainerSnapshots for multi-container)
+                container_snapshots = spec.get("containerSnapshots", [])
+                if container_snapshots:
+                    # Multi-container: use first container's image
+                    image_uri = container_snapshots[0].get("imageURI", "unknown")
+                else:
+                    image_uri = "unknown"
+                image_spec = ImageSpec(uri=image_uri) if image_uri else ImageSpec(uri="unknown")
+
+                return Sandbox(
+                    id=sandbox_id,
+                    status=SandboxStatus(
+                        state=state,
+                        reason=reason,
+                        message=message,
+                        last_transition_at=creation_timestamp,
+                    ),
+                    created_at=creation_timestamp,
+                    expires_at=None,
+                    metadata=user_metadata if user_metadata else None,
+                    image=image_spec,
+                    entrypoint=[],
+                )
+
+            # Should not reach here due to NotFound check above
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": SandboxErrorCodes.K8S_SANDBOX_NOT_FOUND,
+                    "message": f"Sandbox '{sandbox_id}' not found",
+                },
+            )
+
         except HTTPException:
             raise
         except Exception as e:
@@ -451,50 +509,96 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                     "message": f"Failed to get sandbox: {str(e)}",
                 },
             ) from e
-    
+
     def list_sandboxes(self, request: ListSandboxesRequest) -> ListSandboxesResponse:
         """
         List sandboxes with filtering and pagination.
-        
+
         Args:
             request: List request with filters and pagination
-            
+
         Returns:
             ListSandboxesResponse: Paginated list of sandboxes
         """
         try:
             # Build label selector
             label_selector = SANDBOX_ID_LABEL
-            
+
             # List all workloads
             workloads = self.workload_provider.list_workloads(
                 namespace=self.namespace,
                 label_selector=label_selector,
             )
-            
+
             # Convert to Sandbox objects
-            sandboxes = [
-                self._build_sandbox_from_workload(w) for w in workloads
-            ]
-            
+            sandboxes = [self._build_sandbox_from_workload(w) for w in workloads]
+
+            # Include paused sandboxes (Ready snapshots without BatchSandbox)
+            try:
+                snapshots = self.snapshot_provider.list_snapshots(
+                    namespace=self.namespace,
+                    label_selector=f"sandbox.opensandbox.io/sandbox-id",
+                )
+
+                workload_ids = {
+                    w.get("metadata", {}).get("labels", {}).get(SANDBOX_ID_LABEL) for w in workloads
+                }
+
+                for snap in snapshots:
+                    snap_id = snap.get("spec", {}).get("sandboxId", "")
+                    phase = snap.get("status", {}).get("phase", "")
+                    if snap_id and phase == "Ready" and snap_id not in workload_ids:
+                        metadata = snap.get("metadata", {})
+                        labels = metadata.get("labels", {})
+                        spec = snap.get("spec", {})
+                        # Get image from ContainerSnapshots (multi-container support)
+                        container_snapshots = spec.get("containerSnapshots", [])
+                        if container_snapshots:
+                            image_uri = container_snapshots[0].get("imageURI", "unknown")
+                        else:
+                            image_uri = "unknown"
+                        user_metadata = {
+                            k: v for k, v in labels.items() if not k.startswith("opensandbox.io/")
+                        }
+
+                        paused_sandbox = Sandbox(
+                            id=snap_id,
+                            status=SandboxStatus(
+                                state="Paused",
+                                reason="SNAPSHOT_READY",
+                                message="Sandbox paused",
+                                last_transition_at=metadata.get("creationTimestamp"),
+                            ),
+                            created_at=metadata.get("creationTimestamp"),
+                            expires_at=None,
+                            metadata=user_metadata if user_metadata else None,
+                            image=(
+                                ImageSpec(uri=image_uri) if image_uri else ImageSpec(uri="unknown")
+                            ),
+                            entrypoint=[],
+                        )
+                        sandboxes.append(paused_sandbox)
+            except Exception as e:
+                logger.warning("Failed to list paused sandboxes from snapshots: %s", e)
+
             # Apply filters
             filtered = self._apply_filters(sandboxes, request.filter)
-            
+
             # Sort by creation time (newest first)
             filtered.sort(key=lambda s: s.created_at or datetime.min, reverse=True)
-            
+
             # Apply pagination
             total_items = len(filtered)
             page = request.pagination.page
             page_size = request.pagination.page_size
-            
+
             start_idx = (page - 1) * page_size
             end_idx = start_idx + page_size
             paginated_items = filtered[start_idx:end_idx]
-            
+
             total_pages = (total_items + page_size - 1) // page_size
             has_next = page < total_pages
-            
+
             return ListSandboxesResponse(
                 items=paginated_items,
                 pagination=PaginationInfo(
@@ -505,7 +609,7 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                     has_next_page=has_next,
                 ),
             )
-            
+
         except Exception as e:
             logger.error(f"Error listing sandboxes: {e}")
             raise HTTPException(
@@ -515,79 +619,253 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                     "message": f"Failed to list sandboxes: {str(e)}",
                 },
             ) from e
-    
+
     def delete_sandbox(self, sandbox_id: str) -> None:
         """
-        Delete a sandbox.
-        
-        Args:
-            sandbox_id: Unique sandbox identifier
-            
-        Raises:
-            HTTPException: If deletion fails
+        Delete sandbox and associated snapshot.
         """
+        deleted = False
+
+        # 1. Delete BatchSandbox
         try:
-            self.workload_provider.delete_workload(
-                sandbox_id=sandbox_id,
-                namespace=self.namespace,
-            )
-            
-            logger.info(f"Deleted sandbox: {sandbox_id}")
-            
+            self.workload_provider.delete_workload(sandbox_id, self.namespace)
+            deleted = True
+            logger.info("Deleted BatchSandbox %s", sandbox_id)
         except Exception as e:
-            if "not found" in str(e).lower():
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail={
-                        "code": SandboxErrorCodes.K8S_SANDBOX_NOT_FOUND,
-                        "message": f"Sandbox '{sandbox_id}' not found",
-                    },
-                ) from e
-            
-            logger.error(f"Error deleting sandbox {sandbox_id}: {e}")
+            logger.debug("BatchSandbox %s not found or already deleted: %s", sandbox_id, e)
+
+        # 2. Delete SandboxSnapshot
+        try:
+            self.snapshot_provider.delete_snapshot(sandbox_id, self.namespace)
+            deleted = True
+            logger.info("Deleted SandboxSnapshot %s", sandbox_id)
+        except Exception as e:
+            logger.debug("SandboxSnapshot %s not found or already deleted: %s", sandbox_id, e)
+
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": SandboxErrorCodes.K8S_SANDBOX_NOT_FOUND,
+                    "message": f"Sandbox '{sandbox_id}' not found",
+                },
+            )
+
+    def pause_sandbox(self, sandbox_id: str) -> None:
+        """
+        Pause sandbox by creating SandboxSnapshot CR.
+
+        The controller handles Pod discovery, commit, push, and BatchSandbox cleanup.
+        """
+        # 1. Get BatchSandbox
+        batchsandbox = self.workload_provider.get_workload(sandbox_id, self.namespace)
+        if not batchsandbox:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": SandboxErrorCodes.K8S_SANDBOX_NOT_FOUND,
+                    "message": f"Sandbox '{sandbox_id}' not found",
+                },
+            )
+
+        # 2. Validate state
+        workload_status = self.workload_provider.get_status(batchsandbox)
+        if workload_status["state"] != "Running":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": SandboxErrorCodes.INVALID_STATE,
+                    "message": f"Cannot pause sandbox in state {workload_status['state']}",
+                },
+            )
+
+        spec = batchsandbox.get("spec", {})
+        if spec.get("replicas", 0) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": SandboxErrorCodes.UNSUPPORTED_REPLICAS,
+                    "message": "Pause only supports replicas=1",
+                },
+            )
+
+        # 3. Check for in-flight snapshot
+        existing_snapshot = self.snapshot_provider.get_snapshot(sandbox_id, self.namespace)
+        if existing_snapshot and existing_snapshot.get("status", {}).get("phase") in (
+            "Pending",
+            "Committing",
+            "Pushing",
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": SandboxErrorCodes.SNAPSHOT_IN_PROGRESS,
+                    "message": "Snapshot already in progress",
+                },
+            )
+
+        batch_sandbox_name = batchsandbox["metadata"]["name"]
+
+        # 4. Create minimal SandboxSnapshot CR — controller handles the rest
+        snapshot_body = {
+            "apiVersion": f"{SandboxSnapshotProvider.GROUP}/{SandboxSnapshotProvider.VERSION}",
+            "kind": "SandboxSnapshot",
+            "metadata": {
+                "name": sandbox_id,
+                "namespace": self.namespace,
+                "labels": {
+                    "sandbox.opensandbox.io/sandbox-id": sandbox_id,
+                },
+            },
+            "spec": {
+                "sandboxId": sandbox_id,
+                "sourceBatchSandboxName": batch_sandbox_name,
+                "pausedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            },
+        }
+
+        try:
+            self.snapshot_provider.create_snapshot(self.namespace, snapshot_body)
+            logger.info("Created SandboxSnapshot %s for pause", sandbox_id)
+        except Exception as e:
+            logger.error("Failed to create SandboxSnapshot: %s", e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
                     "code": SandboxErrorCodes.K8S_API_ERROR,
-                    "message": f"Failed to delete sandbox: {str(e)}",
+                    "message": f"Failed to create snapshot: {str(e)}",
                 },
-            ) from e
-    
-    def pause_sandbox(self, sandbox_id: str) -> None:
-        """
-        Pause sandbox (not supported in Kubernetes).
-        
-        Args:
-            sandbox_id: Unique sandbox identifier
-            
-        Raises:
-            HTTPException: Always raises 501 Not Implemented
-        """
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail={
-                "code": SandboxErrorCodes.API_NOT_SUPPORTED,
-                "message": "Pause operation is not supported in Kubernetes runtime",
-            },
-        )
-    
+            )
+
     def resume_sandbox(self, sandbox_id: str) -> None:
         """
-        Resume sandbox (not supported in Kubernetes).
-        
-        Args:
-            sandbox_id: Unique sandbox identifier
-            
-        Raises:
-            HTTPException: Always raises 501 Not Implemented
+        Resume sandbox by creating new BatchSandbox from snapshot image.
+
+        Requires a Ready SandboxSnapshot CR.
         """
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail={
-                "code": SandboxErrorCodes.API_NOT_SUPPORTED,
-                "message": "Resume operation is not supported in Kubernetes runtime",
+        # 1. Get SandboxSnapshot
+        snapshot = self.snapshot_provider.get_snapshot(sandbox_id, self.namespace)
+        if not snapshot:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": SandboxErrorCodes.SNAPSHOT_NOT_FOUND,
+                    "message": f"No snapshot found for sandbox {sandbox_id}",
+                },
+            )
+
+        # 2. Validate snapshot is Ready
+        phase = snapshot.get("status", {}).get("phase")
+        if phase != "Ready":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": SandboxErrorCodes.SNAPSHOT_NOT_READY,
+                    "message": f"Snapshot is in phase {phase}, cannot resume",
+                },
+            )
+
+        # 3. Check BatchSandbox doesn't already exist
+        existing = self.workload_provider.get_workload(sandbox_id, self.namespace)
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": SandboxErrorCodes.INVALID_STATE,
+                    "message": "BatchSandbox already exists, cannot resume",
+                },
+            )
+
+        # 4. Reconstruct BatchSandbox from resumeTemplate
+        snapshot_spec = snapshot.get("spec", {})
+        snapshot_status = snapshot.get("status", {})
+        resume_template = snapshot_spec.get("resumeTemplate", {})
+        template = resume_template.get("template")
+
+        if not template:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.K8S_API_ERROR,
+                    "message": "Snapshot resumeTemplate is missing or invalid",
+                },
+            )
+
+        # Replace container images from snapshot
+        container_snapshots = snapshot_status.get("containerSnapshots", [])
+        if container_snapshots:
+            # Multi-container: replace each container's image from status
+            for cs in container_snapshots:
+                container_name = cs.get("containerName", "")
+                image_uri = cs.get("imageURI", "")
+                if not container_name or not image_uri:
+                    continue
+                for container in template.get("spec", {}).get("containers", []):
+                    if container.get("name") == container_name:
+                        container["image"] = image_uri
+                        break
+        # Note: No legacy fallback - ContainerSnapshots is now required
+
+        # Add imagePullSecrets if configured
+        image_pull_secret = snapshot_spec.get("resumeImagePullSecretName")
+        if image_pull_secret:
+            template["spec"]["imagePullSecrets"] = [{"name": image_pull_secret}]
+
+        # 5. Create BatchSandbox
+        batchsandbox_manifest = {
+            "apiVersion": f"{self.workload_provider.group}/{self.workload_provider.version}",
+            "kind": "BatchSandbox",
+            "metadata": {
+                "name": sandbox_id,
+                "namespace": self.namespace,
+                "labels": {
+                    "sandbox.opensandbox.io/sandbox-id": sandbox_id,
+                    "sandbox.opensandbox.io/resumed-from-snapshot": "true",
+                },
+                "annotations": {
+                    "sandbox.opensandbox.io/resumed-from-snapshot": "true",
+                },
             },
-        )
+            "spec": {
+                "replicas": 1,
+                "template": template,
+            },
+        }
+
+        if resume_template.get("expireTime"):
+            batchsandbox_manifest["spec"]["expireTime"] = resume_template["expireTime"]
+
+        if resume_template.get("pausePolicy"):
+            batchsandbox_manifest["spec"]["pausePolicy"] = resume_template["pausePolicy"]
+
+        original_labels = resume_template.get("metadata", {}).get("labels")
+        if original_labels:
+            batchsandbox_manifest["metadata"]["labels"].update(
+                {
+                    k: v
+                    for k, v in original_labels.items()
+                    if k != SANDBOX_ID_LABEL and not k.startswith("opensandbox.io/")
+                }
+            )
+
+        try:
+            self.k8s_client.create_custom_object(
+                group=self.workload_provider.group,
+                version=self.workload_provider.version,
+                namespace=self.namespace,
+                plural=self.workload_provider.plural,
+                body=batchsandbox_manifest,
+            )
+            logger.info("Created BatchSandbox %s from snapshot", sandbox_id)
+        except Exception as e:
+            logger.error("Failed to create BatchSandbox from snapshot: %s", e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.K8S_API_ERROR,
+                    "message": f"Failed to resume from snapshot: {e}",
+                },
+            )
 
     def get_access_renew_extend_seconds(self, sandbox_id: str) -> Optional[int]:
         workload = self.workload_provider.get_workload(
@@ -617,29 +895,29 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
     ) -> RenewSandboxExpirationResponse:
         """
         Renew sandbox expiration time.
-        
+
         Updates both the BatchSandbox spec.expireTime and label for consistency.
-        
+
         Args:
             sandbox_id: Unique sandbox identifier
             request: Renewal request with new expiration time
-            
+
         Returns:
             RenewSandboxExpirationResponse: Updated expiration time
-            
+
         Raises:
             HTTPException: If renewal fails
         """
         # Validate future expiration
         new_expiration = ensure_future_expiration(request.expires_at)
-        
+
         try:
             # Verify sandbox exists
             workload = self.workload_provider.get_workload(
                 sandbox_id=sandbox_id,
                 namespace=self.namespace,
             )
-            
+
             if not workload:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -665,15 +943,11 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                 namespace=self.namespace,
                 expires_at=new_expiration,
             )
-            
-            logger.info(
-                f"Renewed sandbox {sandbox_id} expiration to {new_expiration}"
-            )
-            
-            return RenewSandboxExpirationResponse(
-                expires_at=new_expiration
-            )
-            
+
+            logger.info(f"Renewed sandbox {sandbox_id} expiration to {new_expiration}")
+
+            return RenewSandboxExpirationResponse(expires_at=new_expiration)
+
         except HTTPException:
             raise
         except Exception as e:
@@ -685,7 +959,7 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                     "message": f"Failed to renew expiration: {str(e)}",
                 },
             ) from e
-    
+
     def get_endpoint(
         self,
         sandbox_id: str,
@@ -694,26 +968,26 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
     ) -> Endpoint:
         """
         Get sandbox access endpoint.
-        
+
         Args:
             sandbox_id: Unique sandbox identifier
             port: Port number
             resolve_internal: Ignored for Kubernetes (always returns Pod IP)
-            
+
         Returns:
             Endpoint: Endpoint information
-            
+
         Raises:
             HTTPException: If endpoint not available
         """
         self.validate_port(port)
-        
+
         try:
             workload = self.workload_provider.get_workload(
                 sandbox_id=sandbox_id,
                 namespace=self.namespace,
             )
-            
+
             if not workload:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -722,7 +996,7 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                         "message": f"Sandbox '{sandbox_id}' not found",
                     },
                 )
-            
+
             endpoint = self.workload_provider.get_endpoint_info(workload, port, sandbox_id)
             if not endpoint:
                 raise HTTPException(
@@ -734,7 +1008,7 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                 )
             self._attach_egress_auth_headers(endpoint, workload)
             return endpoint
-            
+
         except HTTPException:
             raise
         except Exception as e:
@@ -769,13 +1043,59 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
             return annotations.get(SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY)
         return None
 
+    def _derive_sandbox_state(
+        self,
+        batchsandbox: Optional[Dict[str, Any]],
+        snapshot: Optional[Dict[str, Any]],
+    ) -> tuple[str, str, str]:
+        """
+        Derive sandbox state from BatchSandbox and SnapshotSnapshot.
+
+        Returns:
+            Tuple of (state, reason, message)
+        """
+        # Snapshot failed
+        if snapshot and snapshot.get("status", {}).get("phase") == "Failed":
+            return (
+                "Failed",
+                "SNAPSHOT_FAILED",
+                snapshot.get("status", {}).get("message", "Snapshot failed"),
+            )
+
+        # Pausing (both exist, snapshot in progress)
+        if batchsandbox and snapshot:
+            phase = snapshot.get("status", {}).get("phase")
+            if phase in ("Pending", "Committing", "Pushing"):
+                return ("Pausing", f"SNAPSHOT_{phase.upper()}", f"Snapshot is {phase.lower()}")
+            if phase == "Ready":
+                return ("Pausing", "SNAPSHOT_READY_CLEANUP", "Releasing resources")
+
+        # Paused (no workload, snapshot ready)
+        if not batchsandbox and snapshot:
+            phase = snapshot.get("status", {}).get("phase")
+            if phase == "Ready":
+                return ("Paused", "SNAPSHOT_READY", "Sandbox paused")
+            if phase in ("Pending", "Committing", "Pushing"):
+                return ("Pausing", f"SNAPSHOT_{phase.upper()}", f"Snapshot is {phase.lower()}")
+
+        # Resuming (workload from snapshot)
+        if batchsandbox:
+            status = self.workload_provider.get_status(batchsandbox)
+            annotations = batchsandbox.get("metadata", {}).get("annotations", {})
+            if annotations.get("sandbox.opensandbox.io/resumed-from-snapshot") == "true":
+                if status["state"] != "Running":
+                    return ("Resuming", "RESUMING", "Restoring from snapshot")
+            return (status["state"], status["reason"], status["message"])
+
+        return ("NotFound", "SANDBOX_NOT_FOUND", "Sandbox does not exist")
+
     def _build_sandbox_from_workload(self, workload: Any) -> Sandbox:
         """
         Build Sandbox object from Kubernetes workload.
-        
+
         Args:
             workload: Kubernetes workload object (V1Pod or dict for CRD)
-            
+
         Returns:
             Sandbox: Sandbox object
         """
@@ -792,23 +1112,20 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
             creation_timestamp = metadata.creation_timestamp
 
         sandbox_id = labels.get(SANDBOX_ID_LABEL, "")
-        
+
         # Get expiration from provider
         expires_at = self.workload_provider.get_expiration(workload)
-        
+
         # Get status
         status_info = self.workload_provider.get_status(workload)
-        
+
         # Extract metadata (filter out system labels)
-        user_metadata = {
-            k: v for k, v in labels.items()
-            if not k.startswith("opensandbox.io/")
-        }
-        
+        user_metadata = {k: v for k, v in labels.items() if not k.startswith("opensandbox.io/")}
+
         # Get image and entrypoint from spec
         image_uri = ""
         entrypoint = []
-        
+
         if isinstance(workload, dict):
             # For CRD, extract from template
             template = spec.get("template") or spec.get("podTemplate") or {}
@@ -820,13 +1137,13 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                 entrypoint = container.get("command", [])
         else:
             # For Pod object
-            if hasattr(spec, 'containers') and spec.containers:
+            if hasattr(spec, "containers") and spec.containers:
                 container = spec.containers[0]
                 image_uri = container.image or ""
                 entrypoint = container.command or []
-        
+
         image_spec = ImageSpec(uri=image_uri) if image_uri else ImageSpec(uri="unknown")
-        
+
         return Sandbox(
             id=sandbox_id,
             status=SandboxStatus(
@@ -841,24 +1158,24 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
             image=image_spec,
             entrypoint=entrypoint,
         )
-    
+
     def _apply_filters(self, sandboxes: list[Sandbox], filter_spec: Any) -> list[Sandbox]:
         """
         Apply filters to sandbox list.
-        
+
         Args:
             sandboxes: List of sandboxes
             filter_spec: Filter specification
-            
+
         Returns:
             Filtered list of sandboxes
         """
         if not filter_spec:
             return sandboxes
-        
+
         filtered = []
         for sandbox in sandboxes:
             if matches_filter(sandbox, filter_spec):
                 filtered.append(sandbox)
-        
+
         return filtered

@@ -54,6 +54,8 @@ OPERATOR_SDK_VERSION ?= v1.42.0
 CONTROLLER_IMG ?= controller:dev
 # TASK_EXECUTOR_IMG defines the image for the task-executor service.
 TASK_EXECUTOR_IMG ?= task-executor:dev
+# COMMIT_EXECUTOR_IMG defines the image for the commit-executor service.
+COMMIT_EXECUTOR_IMG ?= commit-executor:dev
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -158,6 +160,17 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+
+# Pause/Resume E2E test variables
+REGISTRY_IMAGE ?= registry:2
+REGISTRY_NODE_PORT ?= 30500
+REGISTRY_USERNAME ?= testuser
+REGISTRY_PASSWORD ?= testpass
+
+.PHONY: test-e2e-pause-resume
+test-e2e-pause-resume: setup-test-e2e ## Run pause/resume E2E tests
+	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) \
+		KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="PauseResume"
 
 # Common E2E setup targets - install CRDs and controller for any Kind cluster
 .PHONY: install-e2e-deps
@@ -271,6 +284,10 @@ docker-build-controller: ## Build docker image with the manager.
 .PHONY: docker-build-task-executor
 docker-build-task-executor: ## Build docker image with task-executor.
 	$(CONTAINER_TOOL) build $(DOCKER_BUILD_ARGS) --build-arg PACKAGE=cmd/task-executor/main.go --build-arg USERID=0 -t ${TASK_EXECUTOR_IMG} .
+
+.PHONY: docker-build-commit-executor
+docker-build-commit-executor: ## Build docker image for commit operations.
+	$(CONTAINER_TOOL) build $(DOCKER_BUILD_ARGS) -f Dockerfile.commit-executor -t ${COMMIT_EXECUTOR_IMG} .
 
 .PHONY: docker-push
 # docker-push: ## Push docker image with the manager.

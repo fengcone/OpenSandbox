@@ -427,6 +427,28 @@ class EgressConfig(BaseModel):
     )
 
 
+class PauseConfig(BaseModel):
+    """Pause/resume configuration for snapshot support."""
+
+    default_snapshot_registry: str = Field(
+        default="",
+        description="Default registry for snapshots when pausePolicy.snapshotRegistry is not set.",
+    )
+    committer_image: str = Field(
+        default="containerd/containerd:1.7",
+        description="Image used by commit Job Pod for rootfs snapshot.",
+    )
+    cleanup_snapshot_image_on_delete: bool = Field(
+        default=False,
+        description="Whether to delete snapshot image from registry when sandbox is deleted.",
+    )
+    commit_timeout_seconds: int = Field(
+        default=600,
+        ge=1,
+        description="Timeout for commit job in seconds.",
+    )
+
+
 class RuntimeConfig(BaseModel):
     """Runtime selection (docker, kubernetes, etc.)."""
 
@@ -574,6 +596,10 @@ class AppConfig(BaseModel):
         default=None,
         description="Secure container runtime configuration (gVisor, Kata, Firecracker).",
     )
+    pause: Optional[PauseConfig] = Field(
+        default=None,
+        description="Pause/resume configuration for snapshot support.",
+    )
 
     @model_validator(mode="after")
     def validate_runtime_blocks(self) -> "AppConfig":
@@ -698,6 +724,7 @@ __all__ = [
     "StorageConfig",
     "KubernetesRuntimeConfig",
     "EgressConfig",
+    "PauseConfig",
     "EGRESS_MODE_DNS",
     "EGRESS_MODE_DNS_NFT",
     "SecureRuntimeConfig",

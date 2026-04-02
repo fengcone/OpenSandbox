@@ -79,7 +79,9 @@ def _assert_recent_timestamp_ms(ts: int, *, tolerance_ms: int = 60_000) -> None:
     assert isinstance(ts, int)
     assert ts > 0
     delta = abs(_now_ms() - ts)
-    assert delta <= tolerance_ms, f"timestamp too far from now: delta={delta}ms (ts={ts})"
+    assert delta <= tolerance_ms, (
+        f"timestamp too far from now: delta={delta}ms (ts={ts})"
+    )
 
 
 def _assert_endpoint_has_port(endpoint: str, expected_port: int) -> None:
@@ -100,10 +102,14 @@ def _assert_endpoint_has_port(endpoint: str, expected_port: int) -> None:
     host, port = endpoint.rsplit(":", 1)
     assert host, f"missing host in endpoint: {endpoint}"
     assert port.isdigit(), f"non-numeric port in endpoint: {endpoint}"
-    assert int(port) == expected_port, f"endpoint port mismatch: {endpoint} != :{expected_port}"
+    assert int(port) == expected_port, (
+        f"endpoint port mismatch: {endpoint} != :{expected_port}"
+    )
 
 
-def _assert_times_close(created_at, modified_at, *, tolerance_seconds: float = 2.0) -> None:
+def _assert_times_close(
+    created_at, modified_at, *, tolerance_seconds: float = 2.0
+) -> None:
     """
     Some filesystems / implementations may report created/modified with slight reordering.
     We only assert they're close, and rely on explicit update operations to validate mtime.
@@ -112,7 +118,9 @@ def _assert_times_close(created_at, modified_at, *, tolerance_seconds: float = 2
     assert delta <= tolerance_seconds, f"created/modified skew too large: {delta}s"
 
 
-def _assert_modified_updated(before, after, *, min_delta_ms: int = 0, allow_skew_ms: int = 1000) -> None:
+def _assert_modified_updated(
+    before, after, *, min_delta_ms: int = 0, allow_skew_ms: int = 1000
+) -> None:
     """
     Validate modified_at moved forward after a mutating operation, allowing small clock jitter.
     """
@@ -143,11 +151,15 @@ class TestSandboxE2E:
                 try:
                     await sandbox.kill()
                 except Exception as e:
-                    logger.warning("Teardown: sandbox.kill() failed: %s", e, exc_info=True)
+                    logger.warning(
+                        "Teardown: sandbox.kill() failed: %s", e, exc_info=True
+                    )
                 try:
                     await sandbox.close()
                 except Exception as e:
-                    logger.warning("Teardown: sandbox.close() failed: %s", e, exc_info=True)
+                    logger.warning(
+                        "Teardown: sandbox.close() failed: %s", e, exc_info=True
+                    )
 
     @classmethod
     async def _ensure_sandbox_created(cls):
@@ -172,7 +184,7 @@ class TestSandboxE2E:
                 "GO_VERSION": "1.25",
                 "JAVA_VERSION": "21",
                 "NODE_VERSION": "22",
-                "PYTHON_VERSION": "3.12"
+                "PYTHON_VERSION": "3.12",
             },
             health_check_polling_interval=timedelta(milliseconds=500),
         )
@@ -268,13 +280,20 @@ class TestSandboxE2E:
         assert renewed_info.status.state in {"Running", "Allocated"}
 
         # The renew API should return the new expiration time. Allow small backend-side skew.
-        assert abs((renewed_info.expires_at - renew_response.expires_at).total_seconds()) < 10
+        assert (
+            abs((renewed_info.expires_at - renew_response.expires_at).total_seconds())
+            < 10
+        )
 
         # Renewal is "now + timeout" (SDK behavior). Validate remaining TTL is close to 5 minutes.
         now = renewed_info.expires_at.__class__.now(tz=renewed_info.expires_at.tzinfo)
         remaining = renewed_info.expires_at - now
-        assert remaining > timedelta(minutes=18), f"Remaining TTL too small: {remaining}"
-        assert remaining < timedelta(minutes=22), f"Remaining TTL too large: {remaining}"
+        assert remaining > timedelta(minutes=18), (
+            f"Remaining TTL too small: {remaining}"
+        )
+        assert remaining < timedelta(minutes=22), (
+            f"Remaining TTL too large: {remaining}"
+        )
 
         logger.info(
             "✓ Sandbox expiration updated from %s to %s",
@@ -324,8 +343,9 @@ class TestSandboxE2E:
             await sandbox.kill()
             await sandbox.close()
 
-        logger.info("TEST 1 PASSED: Sandbox lifecycle and health test completed successfully")
-
+        logger.info(
+            "TEST 1 PASSED: Sandbox lifecycle and health test completed successfully"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(1)
@@ -389,7 +409,10 @@ class TestSandboxE2E:
             policy = await sandbox.get_egress_policy()
             assert policy.default_action == "deny"
             assert policy.egress is not None
-            assert any(rule.target == "pypi.org" and rule.action == "allow" for rule in policy.egress)
+            assert any(
+                rule.target == "pypi.org" and rule.action == "allow"
+                for rule in policy.egress
+            )
 
             # Baseline behavior: github blocked, pypi allowed.
             blocked = await sandbox.commands.run("curl -I https://www.github.com")
@@ -418,7 +441,9 @@ class TestSandboxE2E:
             )
 
             # Behavior after patch should be flipped.
-            github_allowed = await sandbox.commands.run("curl -I https://www.github.com")
+            github_allowed = await sandbox.commands.run(
+                "curl -I https://www.github.com"
+            )
             assert github_allowed.error is None
             pypi_denied = await sandbox.commands.run("curl -I https://pypi.org")
             assert pypi_denied.error is not None
@@ -463,12 +488,18 @@ class TestSandboxE2E:
             await asyncio.sleep(5)
 
             egress_endpoint = await sandbox.get_endpoint(DEFAULT_EGRESS_PORT)
-            assert f"/sandboxes/{sandbox.id}/proxy/{DEFAULT_EGRESS_PORT}" in egress_endpoint.endpoint
+            assert (
+                f"/sandboxes/{sandbox.id}/proxy/{DEFAULT_EGRESS_PORT}"
+                in egress_endpoint.endpoint
+            )
 
             policy = await sandbox.get_egress_policy()
             assert policy.default_action == "deny"
             assert policy.egress is not None
-            assert any(rule.target == "pypi.org" and rule.action == "allow" for rule in policy.egress)
+            assert any(
+                rule.target == "pypi.org" and rule.action == "allow"
+                for rule in policy.egress
+            )
 
             blocked = await sandbox.commands.run("curl -I https://www.github.com")
             assert blocked.error is not None
@@ -501,7 +532,10 @@ class TestSandboxE2E:
             bumped = False
             while time.monotonic() < deadline:
                 info = await sandbox.get_info()
-                if info.expires_at is not None and info.expires_at > nominal_expires_at + min_delta:
+                if (
+                    info.expires_at is not None
+                    and info.expires_at > nominal_expires_at + min_delta
+                ):
                     bumped = True
                     logger.info(
                         "Access renew: expires_at=%s above nominal (created_at+timeout)=%s",
@@ -526,7 +560,9 @@ class TestSandboxE2E:
     async def test_01b_host_volume_mount(self):
         """Test creating a sandbox with a host volume mount."""
         if is_kubernetes_runtime():
-            pytest.skip("Host path volume E2E is only covered in the Docker runtime suite")
+            pytest.skip(
+                "Host path volume E2E is only covered in the Docker runtime suite"
+            )
 
         logger.info("=" * 80)
         logger.info("TEST 1b: Creating sandbox with host volume mount (async)")
@@ -554,22 +590,30 @@ class TestSandboxE2E:
             logger.info(f"✓ Sandbox with volume created: {sandbox.id}")
 
             # Step 1: Verify the host marker file is visible inside the sandbox
-            logger.info("Step 1: Verify host marker file is readable inside the sandbox")
-            result = await sandbox.commands.run(f"cat {container_mount_path}/marker.txt")
+            logger.info(
+                "Step 1: Verify host marker file is readable inside the sandbox"
+            )
+            result = await sandbox.commands.run(
+                f"cat {container_mount_path}/marker.txt"
+            )
             assert result.error is None, f"Failed to read marker file: {result.error}"
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "opensandbox-e2e-marker"
             logger.info("✓ Host marker file read successfully inside sandbox")
 
             # Step 2: Write a file from inside the sandbox to the mounted path (read-write)
-            logger.info("Step 2: Write a file from inside the sandbox to the mount path")
+            logger.info(
+                "Step 2: Write a file from inside the sandbox to the mount path"
+            )
             result = await sandbox.commands.run(
                 f"echo 'written-from-sandbox' > {container_mount_path}/sandbox-output.txt"
             )
             assert result.error is None, f"Failed to write file: {result.error}"
 
             # Step 3: Verify the written file is readable
-            result = await sandbox.commands.run(f"cat {container_mount_path}/sandbox-output.txt")
+            result = await sandbox.commands.run(
+                f"cat {container_mount_path}/sandbox-output.txt"
+            )
             assert result.error is None
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "written-from-sandbox"
@@ -577,7 +621,9 @@ class TestSandboxE2E:
 
             # Step 4: Verify the mount path is a proper directory
             logger.info("Step 3: Verify mount path is a directory")
-            result = await sandbox.commands.run(f"test -d {container_mount_path} && echo OK")
+            result = await sandbox.commands.run(
+                f"test -d {container_mount_path} && echo OK"
+            )
             assert result.error is None
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "OK"
@@ -597,10 +643,14 @@ class TestSandboxE2E:
     async def test_01c_host_volume_mount_readonly(self):
         """Test creating a sandbox with a read-only host volume mount."""
         if is_kubernetes_runtime():
-            pytest.skip("Host path volume E2E is only covered in the Docker runtime suite")
+            pytest.skip(
+                "Host path volume E2E is only covered in the Docker runtime suite"
+            )
 
         logger.info("=" * 80)
-        logger.info("TEST 1c: Creating sandbox with read-only host volume mount (async)")
+        logger.info(
+            "TEST 1c: Creating sandbox with read-only host volume mount (async)"
+        )
         logger.info("=" * 80)
 
         host_dir = get_test_host_volume_dir()
@@ -625,7 +675,9 @@ class TestSandboxE2E:
             logger.info(f"✓ Sandbox with read-only volume created: {sandbox.id}")
 
             # Step 1: Verify the host marker file is readable
-            result = await sandbox.commands.run(f"cat {container_mount_path}/marker.txt")
+            result = await sandbox.commands.run(
+                f"cat {container_mount_path}/marker.txt"
+            )
             assert result.error is None, f"Failed to read marker file: {result.error}"
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "opensandbox-e2e-marker"
@@ -645,7 +697,9 @@ class TestSandboxE2E:
                 pass
             await sandbox.close()
 
-        logger.info("TEST 1c PASSED: Read-only host volume mount test completed successfully")
+        logger.info(
+            "TEST 1c PASSED: Read-only host volume mount test completed successfully"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(1)
@@ -678,7 +732,9 @@ class TestSandboxE2E:
 
             # Step 1: Verify the marker file seeded into the named volume is readable
             logger.info("Step 1: Verify PVC marker file is readable inside the sandbox")
-            result = await sandbox.commands.run(f"cat {container_mount_path}/marker.txt")
+            result = await sandbox.commands.run(
+                f"cat {container_mount_path}/marker.txt"
+            )
             assert result.error is None, f"Failed to read marker file: {result.error}"
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "pvc-marker-data"
@@ -692,14 +748,18 @@ class TestSandboxE2E:
             assert result.error is None, f"Failed to write file: {result.error}"
 
             # Step 3: Verify the written file is readable
-            result = await sandbox.commands.run(f"cat {container_mount_path}/pvc-output.txt")
+            result = await sandbox.commands.run(
+                f"cat {container_mount_path}/pvc-output.txt"
+            )
             assert result.error is None
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "written-to-pvc"
             logger.info("✓ File written and verified inside sandbox via PVC mount")
 
             # Step 4: Verify the mount path is a proper directory
-            result = await sandbox.commands.run(f"test -d {container_mount_path} && echo OK")
+            result = await sandbox.commands.run(
+                f"test -d {container_mount_path} && echo OK"
+            )
             assert result.error is None
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "OK"
@@ -712,14 +772,18 @@ class TestSandboxE2E:
                 pass
             await sandbox.close()
 
-        logger.info("TEST 1d PASSED: PVC named volume mount test completed successfully")
+        logger.info(
+            "TEST 1d PASSED: PVC named volume mount test completed successfully"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(1)
     async def test_01e_pvc_named_volume_mount_readonly(self):
         """Test creating a sandbox with a read-only PVC (Docker named volume) mount."""
         logger.info("=" * 80)
-        logger.info("TEST 1e: Creating sandbox with read-only PVC named volume mount (async)")
+        logger.info(
+            "TEST 1e: Creating sandbox with read-only PVC named volume mount (async)"
+        )
         logger.info("=" * 80)
 
         pvc_volume_name = get_test_pvc_name()
@@ -744,7 +808,9 @@ class TestSandboxE2E:
             logger.info(f"✓ Sandbox with read-only PVC volume created: {sandbox.id}")
 
             # Step 1: Verify the marker file is readable on read-only mount
-            result = await sandbox.commands.run(f"cat {container_mount_path}/marker.txt")
+            result = await sandbox.commands.run(
+                f"cat {container_mount_path}/marker.txt"
+            )
             assert result.error is None, f"Failed to read marker file: {result.error}"
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "pvc-marker-data"
@@ -764,14 +830,18 @@ class TestSandboxE2E:
                 pass
             await sandbox.close()
 
-        logger.info("TEST 1e PASSED: Read-only PVC named volume mount test completed successfully")
+        logger.info(
+            "TEST 1e PASSED: Read-only PVC named volume mount test completed successfully"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(1)
     async def test_01f_pvc_named_volume_subpath_mount(self):
         """Test creating a sandbox with a PVC named volume mount using subPath."""
         logger.info("=" * 80)
-        logger.info("TEST 1f: Creating sandbox with PVC named volume subPath mount (async)")
+        logger.info(
+            "TEST 1f: Creating sandbox with PVC named volume subPath mount (async)"
+        )
         logger.info("=" * 80)
 
         pvc_volume_name = get_test_pvc_name()
@@ -798,8 +868,12 @@ class TestSandboxE2E:
 
             # Step 1: Verify the subpath marker file is readable
             logger.info("Step 1: Verify subPath marker file is readable")
-            result = await sandbox.commands.run(f"cat {container_mount_path}/marker.txt")
-            assert result.error is None, f"Failed to read subpath marker file: {result.error}"
+            result = await sandbox.commands.run(
+                f"cat {container_mount_path}/marker.txt"
+            )
+            assert result.error is None, (
+                f"Failed to read subpath marker file: {result.error}"
+            )
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "pvc-subpath-marker"
             logger.info("✓ SubPath marker file read successfully")
@@ -821,7 +895,9 @@ class TestSandboxE2E:
             )
             assert result.error is None
             for _attempt in range(3):
-                result = await sandbox.commands.run(f"cat {container_mount_path}/output.txt")
+                result = await sandbox.commands.run(
+                    f"cat {container_mount_path}/output.txt"
+                )
                 if result.logs.stdout:
                     break
                 await asyncio.sleep(1)
@@ -837,7 +913,9 @@ class TestSandboxE2E:
                 pass
             await sandbox.close()
 
-        logger.info("TEST 1f PASSED: PVC subPath named volume mount test completed successfully")
+        logger.info(
+            "TEST 1f PASSED: PVC subPath named volume mount test completed successfully"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(2)
@@ -872,7 +950,9 @@ class TestSandboxE2E:
 
         async def on_execution_complete(complete: ExecutionComplete):
             completed_events.append(complete)
-            logger.info(f"Execution completed in {complete.execution_time_in_millis} ms")
+            logger.info(
+                f"Execution completed in {complete.execution_time_in_millis} ms"
+            )
 
         async def on_error(error: ExecutionError):
             errors.append(error)
@@ -888,7 +968,7 @@ class TestSandboxE2E:
             on_result=on_result,
             on_execution_complete=on_execution_complete,
             on_error=on_error,
-            on_init=on_init
+            on_init=on_init,
         )
 
         echo_result = await sandbox.commands.run(
@@ -912,13 +992,17 @@ class TestSandboxE2E:
 
         # Verify handlers captured events
         assert len(init_events) == 1, "Execution should have exactly one init event"
-        assert len(completed_events) == 1, "Execution should have exactly one completion event"
+        assert len(completed_events) == 1, (
+            "Execution should have exactly one completion event"
+        )
         assert init_events[0].id == echo_result.id
         _assert_recent_timestamp_ms(init_events[0].timestamp)
         _assert_recent_timestamp_ms(completed_events[0].timestamp)
         assert completed_events[0].execution_time_in_millis >= 0
 
-        assert len(stdout_messages) == 1, "Should have captured exactly one stdout message"
+        assert len(stdout_messages) == 1, (
+            "Should have captured exactly one stdout message"
+        )
         assert stdout_messages[0].text == "Hello OpenSandbox E2E"
         assert stdout_messages[0].is_error is False
         _assert_recent_timestamp_ms(stdout_messages[0].timestamp)
@@ -960,8 +1044,9 @@ class TestSandboxE2E:
         end_time = time.time()
 
         execution_time = (end_time - start_time) * 1000
-        assert execution_time < 10000, \
+        assert execution_time < 10000, (
             f"Background command should return quickly, but took {execution_time} ms"
+        )
         assert background_result.exit_code is None
         logger.info(f"✓ Background command returned in {execution_time:.2f} ms")
 
@@ -985,7 +1070,8 @@ class TestSandboxE2E:
         assert fail_result.error.name == "CommandExecError"
         assert len(fail_result.logs.stderr) > 0
         assert any(
-            "nonexistent-command-that-does-not-exist" in m.text for m in fail_result.logs.stderr
+            "nonexistent-command-that-does-not-exist" in m.text
+            for m in fail_result.logs.stderr
         )
         assert all(m.is_error is True for m in fail_result.logs.stderr)
         _assert_recent_timestamp_ms(fail_result.logs.stderr[0].timestamp)
@@ -998,7 +1084,9 @@ class TestSandboxE2E:
         _assert_recent_timestamp_ms(init_events[0].timestamp)
         # Contract: error and complete are mutually exclusive; failing command should emit error only.
         assert len(errors) >= 1, "Should have captured error events"
-        assert len(completed_events) == 0, "Failing command should not emit completion event"
+        assert len(completed_events) == 0, (
+            "Failing command should not emit completion event"
+        )
 
         assert errors[0].name == "CommandExecError", "Error name should match"
         assert len(stderr_messages) > 0, "Should have captured stderr messages"
@@ -1008,7 +1096,9 @@ class TestSandboxE2E:
 
         logger.info(f"✓ Failed command result: {fail_result}")
 
-        logger.info("TEST 2 PASSED: Basic command execution test completed successfully")
+        logger.info(
+            "TEST 2 PASSED: Basic command execution test completed successfully"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(2)
@@ -1021,45 +1111,80 @@ class TestSandboxE2E:
         sandbox = TestSandboxE2E.sandbox
 
         logger.info("=" * 80)
-        logger.info("TEST 2c: Bash session API — verify working directory is passed and applied")
+        logger.info(
+            "TEST 2c: Bash session API — verify working directory is passed and applied"
+        )
         logger.info("=" * 80)
 
-        logger.info("Step 1: Create session with working_directory=/tmp and verify session starts in that directory")
+        logger.info(
+            "Step 1: Create session with working_directory=/tmp and verify session starts in that directory"
+        )
         sid = await sandbox.commands.create_session(working_directory="/tmp")
         assert sid is not None and isinstance(sid, str) and len(sid) > 0
         out_pwd = await sandbox.commands.run_in_session(sid, "pwd")
         assert out_pwd.error is None, f"pwd failed: {out_pwd.error}"
         assert out_pwd.exit_code == 0
         pwd_line = "".join(m.text for m in out_pwd.logs.stdout).strip()
-        assert pwd_line == "/tmp", f"create_session(working_directory=/tmp) should run in /tmp, got: {pwd_line!r}"
-        logger.info("✓ create_session(working_directory=/tmp) applied: pwd => %s", pwd_line)
+        assert pwd_line == "/tmp", (
+            f"create_session(working_directory=/tmp) should run in /tmp, got: {pwd_line!r}"
+        )
+        logger.info(
+            "✓ create_session(working_directory=/tmp) applied: pwd => %s", pwd_line
+        )
 
-        logger.info("Step 2: run_in_session with working_directory override — run in /var and verify")
-        out_var = await sandbox.commands.run_in_session(sid, "pwd", working_directory="/var")
+        logger.info(
+            "Step 2: run_in_session with working_directory override — run in /var and verify"
+        )
+        out_var = await sandbox.commands.run_in_session(
+            sid, "pwd", working_directory="/var"
+        )
         assert out_var.error is None
         assert out_var.exit_code == 0
         var_line = "".join(m.text for m in out_var.logs.stdout).strip()
-        assert var_line == "/var", f"run_in_session(..., working_directory=/var) should run in /var, got: {var_line!r}"
-        logger.info("✓ run_in_session(..., working_directory=/var) applied: pwd => %s", var_line)
+        assert var_line == "/var", (
+            f"run_in_session(..., working_directory=/var) should run in /var, got: {var_line!r}"
+        )
+        logger.info(
+            "✓ run_in_session(..., working_directory=/var) applied: pwd => %s", var_line
+        )
 
-        logger.info("Step 3: run_in_session with working_directory=/tmp — verify override per run")
-        out_tmp = await sandbox.commands.run_in_session(sid, "pwd", working_directory="/tmp")
+        logger.info(
+            "Step 3: run_in_session with working_directory=/tmp — verify override per run"
+        )
+        out_tmp = await sandbox.commands.run_in_session(
+            sid, "pwd", working_directory="/tmp"
+        )
         assert out_tmp.error is None
         assert out_tmp.exit_code == 0
         tmp_line = "".join(m.text for m in out_tmp.logs.stdout).strip()
-        assert tmp_line == "/tmp", f"run_in_session(..., working_directory=/tmp) should run in /tmp, got: {tmp_line!r}"
-        logger.info("✓ run_in_session(..., working_directory=/tmp) applied: pwd => %s", tmp_line)
+        assert tmp_line == "/tmp", (
+            f"run_in_session(..., working_directory=/tmp) should run in /tmp, got: {tmp_line!r}"
+        )
+        logger.info(
+            "✓ run_in_session(..., working_directory=/tmp) applied: pwd => %s", tmp_line
+        )
 
-        logger.info("Step 3b: Export env in one run, read in next run — verify session state (env) persists")
-        await sandbox.commands.run_in_session(sid, "export E2E_SESSION_ENV=session-env-ok")
+        logger.info(
+            "Step 3b: Export env in one run, read in next run — verify session state (env) persists"
+        )
+        await sandbox.commands.run_in_session(
+            sid, "export E2E_SESSION_ENV=session-env-ok"
+        )
         out_env = await sandbox.commands.run_in_session(sid, "echo $E2E_SESSION_ENV")
         assert out_env.error is None
         assert out_env.exit_code == 0
         env_line = "".join(m.text for m in out_env.logs.stdout).strip()
-        assert env_line == "session-env-ok", f"env set in previous run should be visible, got: {env_line!r}"
-        logger.info("✓ session env persists across run_in_session: echo $E2E_SESSION_ENV => %s", env_line)
+        assert env_line == "session-env-ok", (
+            f"env set in previous run should be visible, got: {env_line!r}"
+        )
+        logger.info(
+            "✓ session env persists across run_in_session: echo $E2E_SESSION_ENV => %s",
+            env_line,
+        )
 
-        logger.info("Step 3c: Failing subprocess in session should propagate non-zero exit_code")
+        logger.info(
+            "Step 3c: Failing subprocess in session should propagate non-zero exit_code"
+        )
         fail = await sandbox.commands.run_in_session(
             sid, "sh -c 'echo session-fail >&2; exit 7'"
         )
@@ -1070,22 +1195,30 @@ class TestSandboxE2E:
         assert fail.complete is None
         logger.info("✓ run_in_session failure propagated exit_code=7")
 
-        logger.info("Step 4: New session with working_directory=/var — verify create_session working directory again")
+        logger.info(
+            "Step 4: New session with working_directory=/var — verify create_session working directory again"
+        )
         sid2 = await sandbox.commands.create_session(working_directory="/var")
         assert sid2 is not None
         out_var2 = await sandbox.commands.run_in_session(sid2, "pwd")
         assert out_var2.error is None
         assert out_var2.exit_code == 0
         var2_line = "".join(m.text for m in out_var2.logs.stdout).strip()
-        assert var2_line == "/var", f"create_session(working_directory=/var) should run in /var, got: {var2_line!r}"
-        logger.info("✓ create_session(working_directory=/var) applied: pwd => %s", var2_line)
+        assert var2_line == "/var", (
+            f"create_session(working_directory=/var) should run in /var, got: {var2_line!r}"
+        )
+        logger.info(
+            "✓ create_session(working_directory=/var) applied: pwd => %s", var2_line
+        )
 
         logger.info("Step 5: Delete both sessions")
         await sandbox.commands.delete_session(sid)
         await sandbox.commands.delete_session(sid2)
         logger.info("✓ Sessions deleted")
 
-        logger.info("TEST 2c PASSED: working directory passing verified for create_session and run_in_session")
+        logger.info(
+            "TEST 2c PASSED: working directory passing verified for create_session and run_in_session"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(3)
@@ -1108,7 +1241,9 @@ class TestSandboxE2E:
         logs_text = ""
         cursor = None
         for _ in range(20):
-            logs = await sandbox.commands.get_background_command_logs(command_id, cursor=cursor)
+            logs = await sandbox.commands.get_background_command_logs(
+                command_id, cursor=cursor
+            )
             logs_text += logs.content
             cursor = logs.cursor if logs.cursor is not None else cursor
             if "log-line-2" in logs_text:
@@ -1128,8 +1263,8 @@ class TestSandboxE2E:
         env_key = "OPEN_SANDBOX_E2E_CMD_ENV"
         env_value = f"env-ok-{int(time.time())}"
         probe_command = (
-            f"sh -c 'if [ -z \"${{{env_key}:-}}\" ]; then echo \"__EMPTY__\"; "
-            f"else echo \"${{{env_key}}}\"; fi'"
+            f'sh -c \'if [ -z "${{{env_key}:-}}" ]; then echo "__EMPTY__"; '
+            f'else echo "${{{env_key}}}"; fi\''
         )
 
         # Baseline: variable should be empty when not injected.
@@ -1181,7 +1316,9 @@ class TestSandboxE2E:
         assert dir_info_map[test_dir2].mode == 644
         assert dir_info_map[test_dir1].owner
         assert dir_info_map[test_dir1].group
-        _assert_times_close(dir_info_map[test_dir1].created_at, dir_info_map[test_dir1].modified_at)
+        _assert_times_close(
+            dir_info_map[test_dir1].created_at, dir_info_map[test_dir1].modified_at
+        )
 
         ls_result = await sandbox.commands.run(
             "ls -la | grep fs_test",
@@ -1197,25 +1334,27 @@ class TestSandboxE2E:
         test_content = "Hello Filesystem!\\nLine 2 with special chars: åäö\\nLine 3"
 
         write_entry1 = WriteEntry(path=test_file1, data=test_content, mode=644)
-        write_entry2 = WriteEntry(path=test_file2, data=test_content.encode('utf-8'), mode=755)
+        write_entry2 = WriteEntry(
+            path=test_file2, data=test_content.encode("utf-8"), mode=755
+        )
         write_entry3 = WriteEntry(
             path=test_file3,
-            data=BytesIO(test_content.encode('utf-8')),
+            data=BytesIO(test_content.encode("utf-8")),
             group="nogroup",
             owner="nobody",
-            mode=755
+            mode=755,
         )
         await sandbox.files.write_files([write_entry1, write_entry2, write_entry3])
         logger.info("✓ Created 3 test files")
 
         logger.info("Step 3: Read and verify file content using different methods")
-        read_content1 = await sandbox.files.read_file(test_file1, encoding='utf-8')
+        read_content1 = await sandbox.files.read_file(test_file1, encoding="utf-8")
         read_content1_partial = await sandbox.files.read_file(
-            test_file1, encoding='utf-8', range_header="bytes=0-9"
+            test_file1, encoding="utf-8", range_header="bytes=0-9"
         )
 
         read_bytes2 = await sandbox.files.read_bytes(test_file2)
-        read_content2 = read_bytes2.decode('utf-8')
+        read_content2 = read_bytes2.decode("utf-8")
 
         stream3 = await sandbox.files.read_bytes_stream(test_file3)
         read_content3_bytes = b""
@@ -1260,7 +1399,9 @@ class TestSandboxE2E:
         assert file_info3.owner == "nobody"
         assert file_info3.group == "nogroup"
         _assert_times_close(file_info3.created_at, file_info3.modified_at)
-        logger.info(f"✓ File info verified: size={file_info1.size}, mode={oct(file_info1.mode)}")
+        logger.info(
+            f"✓ File info verified: size={file_info1.size}, mode={oct(file_info1.mode)}"
+        )
 
         logger.info("Step 5: Test search functionality")
         search_all_entry = SearchEntry(path=test_dir1, pattern="*")
@@ -1272,21 +1413,17 @@ class TestSandboxE2E:
         assert test_file2 in all_files
         assert test_file3 in all_files
         assert all_files[test_file1].size == expected_size
-        _assert_times_close(all_files[test_file1].created_at, all_files[test_file1].modified_at)
+        _assert_times_close(
+            all_files[test_file1].created_at, all_files[test_file1].modified_at
+        )
         logger.info("✓ Search found all 3 files")
 
         logger.info("Step 6: Test permission changes")
         perm_entry1 = SetPermissionEntry(
-            path=test_file1,
-            mode=755,
-            owner="nobody",
-            group="nogroup"
+            path=test_file1, mode=755, owner="nobody", group="nogroup"
         )
         perm_entry2 = SetPermissionEntry(
-            path=test_file2,
-            mode=600,
-            owner="nobody",
-            group="nogroup"
+            path=test_file2, mode=600, owner="nobody", group="nogroup"
         )
         await sandbox.files.set_permissions([perm_entry1, perm_entry2])
 
@@ -1304,7 +1441,9 @@ class TestSandboxE2E:
         logger.info("✓ Permissions updated successfully")
 
         logger.info("Step 7: Update file content")
-        before_update_info = (await sandbox.files.get_file_info([test_file1]))[test_file1]
+        before_update_info = (await sandbox.files.get_file_info([test_file1]))[
+            test_file1
+        ]
         updated_content1 = test_content + "\\nAppended line to file1"
         updated_content2 = test_content + "\\nAppended line to file2"
 
@@ -1322,9 +1461,15 @@ class TestSandboxE2E:
         assert new_content2 == updated_content2
         logger.info("✓ File content updated successfully")
 
-        after_update_info = (await sandbox.files.get_file_info([test_file1]))[test_file1]
+        after_update_info = (await sandbox.files.get_file_info([test_file1]))[
+            test_file1
+        ]
         assert after_update_info.size == len(updated_content1.encode("utf-8"))
-        _assert_modified_updated(before_update_info.modified_at, after_update_info.modified_at, min_delta_ms=1)
+        _assert_modified_updated(
+            before_update_info.modified_at,
+            after_update_info.modified_at,
+            min_delta_ms=1,
+        )
 
         logger.info("Step 8: Replace file contents via API (replace_contents)")
         before_replace_info = after_update_info
@@ -1339,8 +1484,14 @@ class TestSandboxE2E:
         assert "Replaced line in file1" in replaced_content1
         assert "Appended line to file1" not in replaced_content1
 
-        after_replace_info = (await sandbox.files.get_file_info([test_file1]))[test_file1]
-        _assert_modified_updated(before_replace_info.modified_at, after_replace_info.modified_at, min_delta_ms=1)
+        after_replace_info = (await sandbox.files.get_file_info([test_file1]))[
+            test_file1
+        ]
+        _assert_modified_updated(
+            before_replace_info.modified_at,
+            after_replace_info.modified_at,
+            min_delta_ms=1,
+        )
 
         logger.info("Step 9: Move/rename a file via API (move_files)")
         moved_path = f"{test_dir2}/moved_file3.txt"
@@ -1356,7 +1507,9 @@ class TestSandboxE2E:
             await sandbox.files.read_file(test_file2, encoding="utf-8")
 
         # After move+delete, search should reflect the updated view.
-        files_after = await sandbox.files.search(SearchEntry(path=test_dir1, pattern="*"))
+        files_after = await sandbox.files.search(
+            SearchEntry(path=test_dir1, pattern="*")
+        )
         assert {e.path for e in files_after} == {test_file1}
 
         logger.info("Step 11: Delete directories recursively (delete_directories)")
@@ -1382,7 +1535,9 @@ class TestSandboxE2E:
         assert len(verify_dirs_deleted.logs.stdout) == 1
         assert verify_dirs_deleted.logs.stdout[0].text == "OK"
 
-        logger.info("TEST 3 PASSED: Basic filesystem operations test completed successfully")
+        logger.info(
+            "TEST 3 PASSED: Basic filesystem operations test completed successfully"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(5)
@@ -1444,7 +1599,9 @@ class TestSandboxE2E:
         )
         if len(completed_events) > 0:
             assert len(completed_events) == 1
-            _assert_recent_timestamp_ms(completed_events[0].timestamp, tolerance_ms=180_000)
+            _assert_recent_timestamp_ms(
+                completed_events[0].timestamp, tolerance_ms=180_000
+            )
 
         # Interrupt should stop the process early; most implementations surface an error and/or stderr.
         assert execution.error is not None or len(execution.logs.stderr) > 0
@@ -1458,7 +1615,10 @@ class TestSandboxE2E:
     async def test_05_sandbox_pause(self):
         """Test sandbox pause operation."""
         if is_kubernetes_runtime():
-            pytest.skip("Pause is not supported by the Kubernetes runtime")
+            pytest.skip(
+                "Pause/resume in Kubernetes runtime requires pausePolicy"
+                " in sandbox create request"
+            )
 
         await self._ensure_sandbox_created()
         sandbox = TestSandboxE2E.sandbox
@@ -1493,7 +1653,9 @@ class TestSandboxE2E:
                 final_status = current_status
                 break
 
-        assert final_status is not None, "Failed to get final status after pause operation"
+        assert final_status is not None, (
+            "Failed to get final status after pause operation"
+        )
         assert final_status.state == "Paused", "Sandbox should be in Paused state"
 
         # Verify pause semantics: execd should be unreachable.
@@ -1515,7 +1677,10 @@ class TestSandboxE2E:
     async def test_06_sandbox_resume(self):
         """Test sandbox resume operation."""
         if is_kubernetes_runtime():
-            pytest.skip("Resume is not supported by the Kubernetes runtime")
+            pytest.skip(
+                "Pause/resume in Kubernetes runtime requires pausePolicy"
+                " in sandbox create request"
+            )
 
         await self._ensure_sandbox_created()
         sandbox = TestSandboxE2E.sandbox
@@ -1550,8 +1715,12 @@ class TestSandboxE2E:
                 final_status = current_status
                 break
 
-        assert final_status is not None, "Failed to get final status after resume operation"
-        assert final_status.state == "Running", "Sandbox should be in Running state after resume"
+        assert final_status is not None, (
+            "Failed to get final status after resume operation"
+        )
+        assert final_status.state == "Running", (
+            "Sandbox should be in Running state after resume"
+        )
 
         logger.info("Verifying sandbox health after resume...")
         healthy = False
@@ -1571,7 +1740,9 @@ class TestSandboxE2E:
 
         elapsed_time = (time.time() - start_time) * 1000
         logger.info(f"✓ Sandbox resume completed in {elapsed_time:.2f} ms")
-        logger.info("TEST 5 PASSED: Sandbox resume operation test completed successfully")
+        logger.info(
+            "TEST 5 PASSED: Sandbox resume operation test completed successfully"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(8)
@@ -1587,6 +1758,8 @@ class TestSandboxE2E:
         )
 
         with pytest.raises(SandboxApiException) as ei:
-            connected = await Sandbox.connect(sandbox_id=missing_sandbox_id, connection_config=cfg)
+            connected = await Sandbox.connect(
+                sandbox_id=missing_sandbox_id, connection_config=cfg
+            )
             await connected.get_info()
         assert ei.value.request_id == request_id

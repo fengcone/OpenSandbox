@@ -76,7 +76,9 @@ def _assert_recent_timestamp_ms(ts: int, *, tolerance_ms: int = 60_000) -> None:
     assert isinstance(ts, int)
     assert ts > 0
     delta = abs(_now_ms() - ts)
-    assert delta <= tolerance_ms, f"timestamp too far from now: delta={delta}ms (ts={ts})"
+    assert delta <= tolerance_ms, (
+        f"timestamp too far from now: delta={delta}ms (ts={ts})"
+    )
 
 
 def _assert_endpoint_has_port(endpoint: str, expected_port: int) -> None:
@@ -96,10 +98,14 @@ def _assert_endpoint_has_port(endpoint: str, expected_port: int) -> None:
     host, port = endpoint.rsplit(":", 1)
     assert host, f"missing host in endpoint: {endpoint}"
     assert port.isdigit(), f"non-numeric port in endpoint: {endpoint}"
-    assert int(port) == expected_port, f"endpoint port mismatch: {endpoint} != :{expected_port}"
+    assert int(port) == expected_port, (
+        f"endpoint port mismatch: {endpoint} != :{expected_port}"
+    )
 
 
-def _assert_times_close(created_at, modified_at, *, tolerance_seconds: float = 2.0) -> None:
+def _assert_times_close(
+    created_at, modified_at, *, tolerance_seconds: float = 2.0
+) -> None:
     """
     Some filesystems / implementations may report created/modified with slight reordering.
     We only assert they're close, and rely on explicit update operations to validate mtime.
@@ -108,7 +114,9 @@ def _assert_times_close(created_at, modified_at, *, tolerance_seconds: float = 2
     assert delta <= tolerance_seconds, f"created/modified skew too large: {delta}s"
 
 
-def _assert_modified_updated(before, after, *, min_delta_ms: int = 0, allow_skew_ms: int = 1000) -> None:
+def _assert_modified_updated(
+    before, after, *, min_delta_ms: int = 0, allow_skew_ms: int = 1000
+) -> None:
     """
     Validate modified_at moved forward after a mutating operation, allowing small clock jitter.
     """
@@ -138,11 +146,15 @@ class TestSandboxE2ESync:
                 try:
                     sandbox.kill()
                 except Exception as e:
-                    logger.warning("Teardown: sandbox.kill() failed: %s", e, exc_info=True)
+                    logger.warning(
+                        "Teardown: sandbox.kill() failed: %s", e, exc_info=True
+                    )
                 try:
                     sandbox.close()
                 except Exception as e:
-                    logger.warning("Teardown: sandbox.close() failed: %s", e, exc_info=True)
+                    logger.warning(
+                        "Teardown: sandbox.close() failed: %s", e, exc_info=True
+                    )
 
             cfg = request.cls.connection_config
             if cfg is not None:
@@ -239,12 +251,19 @@ class TestSandboxE2ESync:
 
         renewed_info = sandbox.get_info()
         assert renewed_info.expires_at > info.expires_at
-        assert abs((renewed_info.expires_at - renew_response.expires_at).total_seconds()) < 10
+        assert (
+            abs((renewed_info.expires_at - renew_response.expires_at).total_seconds())
+            < 10
+        )
 
         now = renewed_info.expires_at.__class__.now(tz=renewed_info.expires_at.tzinfo)
         remaining = renewed_info.expires_at - now
-        assert remaining > timedelta(minutes=18), f"Remaining TTL too small: {remaining}"
-        assert remaining < timedelta(minutes=22), f"Remaining TTL too large: {remaining}"
+        assert remaining > timedelta(minutes=18), (
+            f"Remaining TTL too small: {remaining}"
+        )
+        assert remaining < timedelta(minutes=22), (
+            f"Remaining TTL too large: {remaining}"
+        )
 
         assert sandbox.files is not None
         assert sandbox.commands is not None
@@ -351,7 +370,10 @@ class TestSandboxE2ESync:
             policy = sandbox.get_egress_policy()
             assert policy.default_action == "deny"
             assert policy.egress is not None
-            assert any(rule.target == "pypi.org" and rule.action == "allow" for rule in policy.egress)
+            assert any(
+                rule.target == "pypi.org" and rule.action == "allow"
+                for rule in policy.egress
+            )
 
             blocked = sandbox.commands.run("curl -I https://www.github.com")
             assert blocked.error is not None
@@ -397,7 +419,9 @@ class TestSandboxE2ESync:
     def test_01b_host_volume_mount(self) -> None:
         """Test creating a sandbox with a host volume mount (sync)."""
         if is_kubernetes_runtime():
-            pytest.skip("Host path volume E2E is only covered in the Docker runtime suite")
+            pytest.skip(
+                "Host path volume E2E is only covered in the Docker runtime suite"
+            )
 
         logger.info("=" * 80)
         logger.info("TEST 1b: Creating sandbox with host volume mount (sync)")
@@ -438,7 +462,9 @@ class TestSandboxE2ESync:
             assert result.error is None, f"Failed to write file: {result.error}"
 
             # Step 3: Verify the written file is readable
-            result = sandbox.commands.run(f"cat {container_mount_path}/sandbox-output.txt")
+            result = sandbox.commands.run(
+                f"cat {container_mount_path}/sandbox-output.txt"
+            )
             assert result.error is None
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "written-from-sandbox"
@@ -469,7 +495,9 @@ class TestSandboxE2ESync:
     def test_01c_host_volume_mount_readonly(self) -> None:
         """Test creating a sandbox with a read-only host volume mount (sync)."""
         if is_kubernetes_runtime():
-            pytest.skip("Host path volume E2E is only covered in the Docker runtime suite")
+            pytest.skip(
+                "Host path volume E2E is only covered in the Docker runtime suite"
+            )
 
         logger.info("=" * 80)
         logger.info("TEST 1c: Creating sandbox with read-only host volume mount (sync)")
@@ -521,7 +549,9 @@ class TestSandboxE2ESync:
             except Exception:
                 pass
 
-        logger.info("TEST 1c PASSED: Read-only host volume mount test completed successfully")
+        logger.info(
+            "TEST 1c PASSED: Read-only host volume mount test completed successfully"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(1)
@@ -590,14 +620,18 @@ class TestSandboxE2ESync:
             except Exception:
                 pass
 
-        logger.info("TEST 1d PASSED: PVC named volume mount test completed successfully")
+        logger.info(
+            "TEST 1d PASSED: PVC named volume mount test completed successfully"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(1)
     def test_01e_pvc_named_volume_mount_readonly(self) -> None:
         """Test creating a sandbox with a read-only PVC (Docker named volume) mount (sync)."""
         logger.info("=" * 80)
-        logger.info("TEST 1e: Creating sandbox with read-only PVC named volume mount (sync)")
+        logger.info(
+            "TEST 1e: Creating sandbox with read-only PVC named volume mount (sync)"
+        )
         logger.info("=" * 80)
 
         pvc_volume_name = get_test_pvc_name()
@@ -646,14 +680,18 @@ class TestSandboxE2ESync:
             except Exception:
                 pass
 
-        logger.info("TEST 1e PASSED: Read-only PVC named volume mount test completed successfully")
+        logger.info(
+            "TEST 1e PASSED: Read-only PVC named volume mount test completed successfully"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(1)
     def test_01f_pvc_named_volume_subpath_mount(self) -> None:
         """Test creating a sandbox with a PVC named volume mount using subPath (sync)."""
         logger.info("=" * 80)
-        logger.info("TEST 1f: Creating sandbox with PVC named volume subPath mount (sync)")
+        logger.info(
+            "TEST 1f: Creating sandbox with PVC named volume subPath mount (sync)"
+        )
         logger.info("=" * 80)
 
         pvc_volume_name = get_test_pvc_name()
@@ -680,7 +718,9 @@ class TestSandboxE2ESync:
 
             # Step 1: Verify the subpath marker file is readable
             result = sandbox.commands.run(f"cat {container_mount_path}/marker.txt")
-            assert result.error is None, f"Failed to read subpath marker file: {result.error}"
+            assert result.error is None, (
+                f"Failed to read subpath marker file: {result.error}"
+            )
             assert len(result.logs.stdout) == 1
             assert result.logs.stdout[0].text == "pvc-subpath-marker"
             logger.info("✓ SubPath marker file read successfully")
@@ -719,7 +759,9 @@ class TestSandboxE2ESync:
             except Exception:
                 pass
 
-        logger.info("TEST 1f PASSED: PVC subPath named volume mount test completed successfully")
+        logger.info(
+            "TEST 1f PASSED: PVC subPath named volume mount test completed successfully"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(2)
@@ -836,7 +878,8 @@ class TestSandboxE2ESync:
         assert fail_result.error.name == "CommandExecError"
         assert len(fail_result.logs.stderr) > 0
         assert any(
-            "nonexistent-command-that-does-not-exist" in m.text for m in fail_result.logs.stderr
+            "nonexistent-command-that-does-not-exist" in m.text
+            for m in fail_result.logs.stderr
         )
         assert all(m.is_error is True for m in fail_result.logs.stderr)
         _assert_recent_timestamp_ms(fail_result.logs.stderr[0].timestamp)
@@ -866,46 +909,77 @@ class TestSandboxE2ESync:
         assert sandbox is not None
 
         logger.info("=" * 80)
-        logger.info("TEST 2c: Bash session API (sync) — verify working directory is passed and applied")
+        logger.info(
+            "TEST 2c: Bash session API (sync) — verify working directory is passed and applied"
+        )
         logger.info("=" * 80)
 
-        logger.info("Step 1: Create session with working_directory=/tmp and verify session starts in that directory")
+        logger.info(
+            "Step 1: Create session with working_directory=/tmp and verify session starts in that directory"
+        )
         sid = sandbox.commands.create_session(working_directory="/tmp")
         assert sid is not None and isinstance(sid, str) and len(sid) > 0
         out_pwd = sandbox.commands.run_in_session(sid, "pwd")
         assert out_pwd.error is None, f"pwd failed: {out_pwd.error}"
         assert out_pwd.exit_code == 0
         pwd_line = "".join(m.text for m in out_pwd.logs.stdout).strip()
-        assert pwd_line == "/tmp", f"create_session(working_directory=/tmp) should run in /tmp, got: {pwd_line!r}"
-        logger.info("✓ create_session(working_directory=/tmp) applied: pwd => %s", pwd_line)
+        assert pwd_line == "/tmp", (
+            f"create_session(working_directory=/tmp) should run in /tmp, got: {pwd_line!r}"
+        )
+        logger.info(
+            "✓ create_session(working_directory=/tmp) applied: pwd => %s", pwd_line
+        )
 
-        logger.info("Step 2: run_in_session with working_directory override — run in /var and verify")
+        logger.info(
+            "Step 2: run_in_session with working_directory override — run in /var and verify"
+        )
         out_var = sandbox.commands.run_in_session(sid, "pwd", working_directory="/var")
         assert out_var.error is None
         assert out_var.exit_code == 0
         var_line = "".join(m.text for m in out_var.logs.stdout).strip()
-        assert var_line == "/var", f"run_in_session(..., working_directory=/var) should run in /var, got: {var_line!r}"
-        logger.info("✓ run_in_session(..., working_directory=/var) applied: pwd => %s", var_line)
+        assert var_line == "/var", (
+            f"run_in_session(..., working_directory=/var) should run in /var, got: {var_line!r}"
+        )
+        logger.info(
+            "✓ run_in_session(..., working_directory=/var) applied: pwd => %s", var_line
+        )
 
-        logger.info("Step 3: run_in_session with working_directory=/tmp — verify override per run")
+        logger.info(
+            "Step 3: run_in_session with working_directory=/tmp — verify override per run"
+        )
         out_tmp = sandbox.commands.run_in_session(sid, "pwd", working_directory="/tmp")
         assert out_tmp.error is None
         assert out_tmp.exit_code == 0
         tmp_line = "".join(m.text for m in out_tmp.logs.stdout).strip()
-        assert tmp_line == "/tmp", f"run_in_session(..., working_directory=/tmp) should run in /tmp, got: {tmp_line!r}"
-        logger.info("✓ run_in_session(..., working_directory=/tmp) applied: pwd => %s", tmp_line)
+        assert tmp_line == "/tmp", (
+            f"run_in_session(..., working_directory=/tmp) should run in /tmp, got: {tmp_line!r}"
+        )
+        logger.info(
+            "✓ run_in_session(..., working_directory=/tmp) applied: pwd => %s", tmp_line
+        )
 
-        logger.info("Step 3b: Export env in one run, read in next run — verify session state (env) persists")
+        logger.info(
+            "Step 3b: Export env in one run, read in next run — verify session state (env) persists"
+        )
         sandbox.commands.run_in_session(sid, "export E2E_SESSION_ENV=session-env-ok")
         out_env = sandbox.commands.run_in_session(sid, "echo $E2E_SESSION_ENV")
         assert out_env.error is None
         assert out_env.exit_code == 0
         env_line = "".join(m.text for m in out_env.logs.stdout).strip()
-        assert env_line == "session-env-ok", f"env set in previous run should be visible, got: {env_line!r}"
-        logger.info("✓ session env persists across run_in_session: echo $E2E_SESSION_ENV => %s", env_line)
+        assert env_line == "session-env-ok", (
+            f"env set in previous run should be visible, got: {env_line!r}"
+        )
+        logger.info(
+            "✓ session env persists across run_in_session: echo $E2E_SESSION_ENV => %s",
+            env_line,
+        )
 
-        logger.info("Step 3c: Failing subprocess in session should propagate non-zero exit_code")
-        fail = sandbox.commands.run_in_session(sid, "sh -c 'echo session-fail >&2; exit 7'")
+        logger.info(
+            "Step 3c: Failing subprocess in session should propagate non-zero exit_code"
+        )
+        fail = sandbox.commands.run_in_session(
+            sid, "sh -c 'echo session-fail >&2; exit 7'"
+        )
         assert fail.error is not None
         assert fail.error.name == "CommandExecError"
         assert fail.error.value == "7"
@@ -913,22 +987,30 @@ class TestSandboxE2ESync:
         assert fail.complete is None
         logger.info("✓ run_in_session failure propagated exit_code=7")
 
-        logger.info("Step 4: New session with working_directory=/var — verify create_session working directory again")
+        logger.info(
+            "Step 4: New session with working_directory=/var — verify create_session working directory again"
+        )
         sid2 = sandbox.commands.create_session(working_directory="/var")
         assert sid2 is not None
         out_var2 = sandbox.commands.run_in_session(sid2, "pwd")
         assert out_var2.error is None
         assert out_var2.exit_code == 0
         var2_line = "".join(m.text for m in out_var2.logs.stdout).strip()
-        assert var2_line == "/var", f"create_session(working_directory=/var) should run in /var, got: {var2_line!r}"
-        logger.info("✓ create_session(working_directory=/var) applied: pwd => %s", var2_line)
+        assert var2_line == "/var", (
+            f"create_session(working_directory=/var) should run in /var, got: {var2_line!r}"
+        )
+        logger.info(
+            "✓ create_session(working_directory=/var) applied: pwd => %s", var2_line
+        )
 
         logger.info("Step 5: Delete both sessions")
         sandbox.commands.delete_session(sid)
         sandbox.commands.delete_session(sid2)
         logger.info("✓ Sessions deleted")
 
-        logger.info("TEST 2c PASSED: working directory passing verified for create_session and run_in_session (sync)")
+        logger.info(
+            "TEST 2c PASSED: working directory passing verified for create_session and run_in_session (sync)"
+        )
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(3)
@@ -952,7 +1034,9 @@ class TestSandboxE2ESync:
         logs_text = ""
         cursor = None
         for _ in range(20):
-            logs = sandbox.commands.get_background_command_logs(command_id, cursor=cursor)
+            logs = sandbox.commands.get_background_command_logs(
+                command_id, cursor=cursor
+            )
             logs_text += logs.content
             cursor = logs.cursor if logs.cursor is not None else cursor
             if "log-line-2" in logs_text:
@@ -973,8 +1057,8 @@ class TestSandboxE2ESync:
         env_key = "OPEN_SANDBOX_E2E_CMD_ENV"
         env_value = f"env-ok-{int(time.time())}"
         probe_command = (
-            f"sh -c 'if [ -z \"${{{env_key}:-}}\" ]; then echo \"__EMPTY__\"; "
-            f"else echo \"${{{env_key}}}\"; fi'"
+            f'sh -c \'if [ -z "${{{env_key}:-}}" ]; then echo "__EMPTY__"; '
+            f'else echo "${{{env_key}}}"; fi\''
         )
 
         # Baseline: variable should be empty when not injected.
@@ -1025,7 +1109,9 @@ class TestSandboxE2ESync:
         assert dir_info_map[test_dir2].mode == 644
         assert dir_info_map[test_dir1].owner
         assert dir_info_map[test_dir1].group
-        _assert_times_close(dir_info_map[test_dir1].created_at, dir_info_map[test_dir1].modified_at)
+        _assert_times_close(
+            dir_info_map[test_dir1].created_at, dir_info_map[test_dir1].modified_at
+        )
 
         ls_result = sandbox.commands.run(
             "ls -la | grep fs_test",
@@ -1039,7 +1125,9 @@ class TestSandboxE2ESync:
         test_content = "Hello Filesystem!\nLine 2 with special chars: åäö\nLine 3"
 
         write_entry1 = WriteEntry(path=test_file1, data=test_content, mode=644)
-        write_entry2 = WriteEntry(path=test_file2, data=test_content.encode("utf-8"), mode=755)
+        write_entry2 = WriteEntry(
+            path=test_file2, data=test_content.encode("utf-8"), mode=755
+        )
         write_entry3 = WriteEntry(
             path=test_file3,
             data=BytesIO(test_content.encode("utf-8")),
@@ -1070,7 +1158,9 @@ class TestSandboxE2ESync:
         assert read_content3 == test_content
         assert read_content1_partial == test_content[:10]
 
-        file_info_map = sandbox.files.get_file_info([test_file1, test_file2, test_file3])
+        file_info_map = sandbox.files.get_file_info(
+            [test_file1, test_file2, test_file3]
+        )
         file_info1 = file_info_map[test_file1]
         assert file_info1.path == test_file1
         assert file_info1.size == expected_size
@@ -1103,10 +1193,16 @@ class TestSandboxE2ESync:
         assert test_file2 in all_files
         assert test_file3 in all_files
         assert all_files[test_file1].size == expected_size
-        _assert_times_close(all_files[test_file1].created_at, all_files[test_file1].modified_at)
+        _assert_times_close(
+            all_files[test_file1].created_at, all_files[test_file1].modified_at
+        )
 
-        perm_entry1 = SetPermissionEntry(path=test_file1, mode=755, owner="nobody", group="nogroup")
-        perm_entry2 = SetPermissionEntry(path=test_file2, mode=600, owner="nobody", group="nogroup")
+        perm_entry1 = SetPermissionEntry(
+            path=test_file1, mode=755, owner="nobody", group="nogroup"
+        )
+        perm_entry2 = SetPermissionEntry(
+            path=test_file2, mode=600, owner="nobody", group="nogroup"
+        )
         sandbox.files.set_permissions([perm_entry1, perm_entry2])
 
         updated_info_map = sandbox.files.get_file_info([test_file1, test_file2])
@@ -1137,7 +1233,11 @@ class TestSandboxE2ESync:
 
         after_update_info = sandbox.files.get_file_info([test_file1])[test_file1]
         assert after_update_info.size == len(updated_content1.encode("utf-8"))
-        _assert_modified_updated(before_update_info.modified_at, after_update_info.modified_at, min_delta_ms=1)
+        _assert_modified_updated(
+            before_update_info.modified_at,
+            after_update_info.modified_at,
+            min_delta_ms=1,
+        )
 
         # Replace file contents via API (replace_contents)
         before_replace_info = after_update_info
@@ -1155,7 +1255,11 @@ class TestSandboxE2ESync:
         assert "Replaced line in file1" in replaced_content1
         assert "Appended line to file1" not in replaced_content1
         after_replace_info = sandbox.files.get_file_info([test_file1])[test_file1]
-        _assert_modified_updated(before_replace_info.modified_at, after_replace_info.modified_at, min_delta_ms=1)
+        _assert_modified_updated(
+            before_replace_info.modified_at,
+            after_replace_info.modified_at,
+            min_delta_ms=1,
+        )
 
         # Move/rename a file via API (move_files)
         moved_path = f"{test_dir2}/moved_file3.txt"
@@ -1254,7 +1358,9 @@ class TestSandboxE2ESync:
         )
         if len(completed_events) > 0:
             assert len(completed_events) == 1
-            _assert_recent_timestamp_ms(completed_events[0].timestamp, tolerance_ms=180_000)
+            _assert_recent_timestamp_ms(
+                completed_events[0].timestamp, tolerance_ms=180_000
+            )
         assert execution.error is not None or len(execution.logs.stderr) > 0
         if execution.error is not None:
             assert execution.error.name
@@ -1266,7 +1372,9 @@ class TestSandboxE2ESync:
     def test_05_sandbox_pause(self) -> None:
         """Test sandbox pause operation."""
         if is_kubernetes_runtime():
-            pytest.skip("Pause is not supported by the Kubernetes runtime")
+            pytest.skip(
+                "Pause/resume in Kubernetes runtime requires pausePolicy in sandbox create request"
+            )
 
         TestSandboxE2ESync._ensure_sandbox_created()
         sandbox = TestSandboxE2ESync.sandbox
@@ -1319,7 +1427,10 @@ class TestSandboxE2ESync:
     def test_06_sandbox_resume(self) -> None:
         """Test sandbox resume operation."""
         if is_kubernetes_runtime():
-            pytest.skip("Resume is not supported by the Kubernetes runtime")
+            pytest.skip(
+                "Pause/resume in Kubernetes runtime requires pausePolicy"
+                " in sandbox create request"
+            )
 
         TestSandboxE2ESync._ensure_sandbox_created()
         sandbox = TestSandboxE2ESync.sandbox
@@ -1386,7 +1497,9 @@ class TestSandboxE2ESync:
 
         try:
             with pytest.raises(SandboxApiException) as ei:
-                connected = SandboxSync.connect(missing_sandbox_id, connection_config=cfg)
+                connected = SandboxSync.connect(
+                    missing_sandbox_id, connection_config=cfg
+                )
                 connected.get_info()
             assert ei.value.request_id == request_id
         finally:

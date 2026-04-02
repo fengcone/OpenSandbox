@@ -56,6 +56,15 @@ var _ = BeforeSuite(func() {
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the task-executor image")
 
+	By("building the commit-executor image")
+	makeArgs = []string{"docker-build-commit-executor", fmt.Sprintf("COMMIT_EXECUTOR_IMG=%s", utils.CommitExecutorImage)}
+	if dockerBuildArgs != "" {
+		makeArgs = append(makeArgs, fmt.Sprintf("DOCKER_BUILD_ARGS=%s", dockerBuildArgs))
+	}
+	cmd = exec.Command("make", makeArgs...)
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the commit-executor image")
+
 	// If you want to change the e2e test vendor from Kind, ensure the image is
 	// built and available before running the tests. Also, remove the following block.
 	By("loading the manager(Operator) image on Kind")
@@ -65,6 +74,18 @@ var _ = BeforeSuite(func() {
 	By("loading the task-executor image on Kind")
 	err = utils.LoadImageToKindClusterWithName(utils.TaskExecutorImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the task-executor image into Kind")
+
+	By("loading the commit-executor image on Kind")
+	err = utils.LoadImageToKindClusterWithName(utils.CommitExecutorImage)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the commit-executor image into Kind")
+
+	By("loading the registry:2 image on Kind (required for pause/resume tests)")
+	err = utils.LoadImageToKindClusterWithName("registry:2")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the registry:2 image into Kind")
+
+	By("loading the alpine image on Kind (required for commit jobs)")
+	err = utils.LoadImageToKindClusterWithName("alpine:latest")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the alpine image into Kind")
 })
 
 var _ = AfterSuite(func() {
