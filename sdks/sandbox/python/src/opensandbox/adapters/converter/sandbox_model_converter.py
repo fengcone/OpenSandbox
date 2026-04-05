@@ -300,13 +300,19 @@ class SandboxModelConverter:
 
         default_action: str | None = "deny"
         if not isinstance(api_policy.default_action, Unset):
-            default_action = str(api_policy.default_action.value)
+            default_action = cast(
+                Literal["allow", "deny"],
+                getattr(api_policy.default_action, "value", api_policy.default_action),
+            )
 
         egress: list[NetworkRule] | None = None
         if not isinstance(api_policy.egress, Unset):
             egress = [
                 NetworkRule(
-                    action=cast(Literal["allow", "deny"], rule.action.value),
+                    action=cast(
+                        Literal["allow", "deny"],
+                        getattr(rule.action, "value", rule.action),
+                    ),
                     target=rule.target,
                 )
                 for rule in api_policy.egress

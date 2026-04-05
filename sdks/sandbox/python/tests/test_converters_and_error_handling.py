@@ -280,8 +280,12 @@ def test_sandbox_model_converter_omits_timeout_for_manual_cleanup() -> None:
 
 
 def test_sandbox_model_converter_maps_platform_from_create_response() -> None:
-    from opensandbox.api.lifecycle.models.create_sandbox_response import CreateSandboxResponse
-    from opensandbox.api.lifecycle.models.platform_spec import PlatformSpec as ApiPlatformSpec
+    from opensandbox.api.lifecycle.models.create_sandbox_response import (
+        CreateSandboxResponse,
+    )
+    from opensandbox.api.lifecycle.models.platform_spec import (
+        PlatformSpec as ApiPlatformSpec,
+    )
     from opensandbox.api.lifecycle.models.sandbox_status import SandboxStatus
 
     api_response = CreateSandboxResponse(

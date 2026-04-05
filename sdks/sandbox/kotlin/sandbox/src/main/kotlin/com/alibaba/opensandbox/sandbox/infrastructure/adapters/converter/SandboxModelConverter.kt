@@ -50,10 +50,10 @@ import com.alibaba.opensandbox.sandbox.api.models.NetworkRule as ApiNetworkRule
 import com.alibaba.opensandbox.sandbox.api.models.OSSFS as ApiOSSFS
 import com.alibaba.opensandbox.sandbox.api.models.PVC as ApiPVC
 import com.alibaba.opensandbox.sandbox.api.models.PaginationInfo as ApiPaginationInfo
+import com.alibaba.opensandbox.sandbox.api.models.PlatformSpec as ApiPlatformSpec
 import com.alibaba.opensandbox.sandbox.api.models.Sandbox as ApiSandbox
 import com.alibaba.opensandbox.sandbox.api.models.SandboxStatus as ApiSandboxStatus
 import com.alibaba.opensandbox.sandbox.api.models.Volume as ApiVolume
-import com.alibaba.opensandbox.sandbox.api.models.PlatformSpec as ApiPlatformSpec
 import com.alibaba.opensandbox.sandbox.api.models.egress.NetworkPolicy as ApiEgressNetworkPolicy
 import com.alibaba.opensandbox.sandbox.api.models.egress.NetworkRule as ApiEgressNetworkRule
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxStatus as DomainSandboxStatus
@@ -257,17 +257,29 @@ internal object SandboxModelConverter {
     }
 
     private fun PlatformSpec.toApiPlatformSpec(): ApiPlatformSpec {
+        val osValue =
+            when (this.os.lowercase()) {
+                "linux" -> ApiPlatformSpec.Os.linux
+                "windows" -> ApiPlatformSpec.Os.windows
+                else -> throw IllegalArgumentException("Unsupported platform os: ${this.os}")
+            }
+        val archValue =
+            when (this.arch.lowercase()) {
+                "amd64" -> ApiPlatformSpec.Arch.amd64
+                "arm64" -> ApiPlatformSpec.Arch.arm64
+                else -> throw IllegalArgumentException("Unsupported platform arch: ${this.arch}")
+            }
         return ApiPlatformSpec(
-            os = this.os,
-            arch = this.arch,
+            os = osValue,
+            arch = archValue,
         )
     }
 
     private fun ApiPlatformSpec.toDomainPlatformSpec(): PlatformSpec {
         return PlatformSpec
             .builder()
-            .os(this.os)
-            .arch(this.arch)
+            .os(this.os.toString())
+            .arch(this.arch.toString())
             .build()
     }
 
