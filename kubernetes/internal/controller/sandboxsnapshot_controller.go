@@ -917,40 +917,54 @@ func (r *SandboxSnapshotReconciler) handleResume(ctx context.Context, snapshot *
 	log := logf.FromContext(ctx)
 	log.Info("Handling resume request", "snapshot", snapshot.Name)
 
-	// Validate prerequisites - ResumeTemplate is in status, filled by Controller
+	// Validate prerequisites - ResumeTemplate is in status, filled by Controller.
+	// These fields must exist when phase==Ready; a missing field indicates data corruption.
+	// Set status to Failed so operators have an explicit signal and the stuck request is surfaced.
 	if snapshot.Status.ResumeTemplate == nil || snapshot.Status.ResumeTemplate.Raw == nil {
-		log.Error(fmt.Errorf("resumeTemplate is empty"), "Cannot resume without resumeTemplate")
-		return ctrl.Result{}, nil
+		msg := "Cannot resume: resumeTemplate is missing from snapshot status"
+		log.Error(fmt.Errorf("resumeTemplate is empty"), msg)
+		r.Recorder.Eventf(snapshot, corev1.EventTypeWarning, "ResumeFailed", msg)
+		return ctrl.Result{}, r.updateSnapshotStatus(ctx, snapshot, sandboxv1alpha1.SandboxSnapshotPhaseFailed, msg)
 	}
 
 	if len(snapshot.Status.ContainerSnapshots) == 0 {
-		log.Error(fmt.Errorf("no containerSnapshots in status"), "Cannot resume without container snapshot images")
-		return ctrl.Result{}, nil
+		msg := "Cannot resume: containerSnapshots is empty in snapshot status"
+		log.Error(fmt.Errorf("no containerSnapshots in status"), msg)
+		r.Recorder.Eventf(snapshot, corev1.EventTypeWarning, "ResumeFailed", msg)
+		return ctrl.Result{}, r.updateSnapshotStatus(ctx, snapshot, sandboxv1alpha1.SandboxSnapshotPhaseFailed, msg)
 	}
 
 	// Parse resumeTemplate from status
 	var resumeTemplate map[string]interface{}
 	if err := json.Unmarshal(snapshot.Status.ResumeTemplate.Raw, &resumeTemplate); err != nil {
+		msg := fmt.Sprintf("Cannot resume: failed to parse resumeTemplate: %v", err)
 		log.Error(err, "Failed to parse resumeTemplate")
-		return ctrl.Result{}, nil
+		r.Recorder.Eventf(snapshot, corev1.EventTypeWarning, "ResumeFailed", msg)
+		return ctrl.Result{}, r.updateSnapshotStatus(ctx, snapshot, sandboxv1alpha1.SandboxSnapshotPhaseFailed, msg)
 	}
 
 	template, ok := resumeTemplate["template"].(map[string]interface{})
 	if !ok {
+		msg := "Cannot resume: resumeTemplate is missing 'template' field"
 		log.Error(fmt.Errorf("template not found in resumeTemplate"), "Invalid resumeTemplate format")
-		return ctrl.Result{}, nil
+		r.Recorder.Eventf(snapshot, corev1.EventTypeWarning, "ResumeFailed", msg)
+		return ctrl.Result{}, r.updateSnapshotStatus(ctx, snapshot, sandboxv1alpha1.SandboxSnapshotPhaseFailed, msg)
 	}
 
 	// Replace container images from status.ContainerSnapshots
 	podSpec, ok := template["spec"].(map[string]interface{})
 	if !ok {
+		msg := "Cannot resume: resumeTemplate.template is missing 'spec' field"
 		log.Error(fmt.Errorf("spec not found in template"), "Invalid template format")
-		return ctrl.Result{}, nil
+		r.Recorder.Eventf(snapshot, corev1.EventTypeWarning, "ResumeFailed", msg)
+		return ctrl.Result{}, r.updateSnapshotStatus(ctx, snapshot, sandboxv1alpha1.SandboxSnapshotPhaseFailed, msg)
 	}
 	containers, ok := podSpec["containers"].([]interface{})
 	if !ok {
+		msg := "Cannot resume: resumeTemplate.template.spec is missing 'containers' field"
 		log.Error(fmt.Errorf("containers not found in template spec"), "Invalid template format")
-		return ctrl.Result{}, nil
+		r.Recorder.Eventf(snapshot, corev1.EventTypeWarning, "ResumeFailed", msg)
+		return ctrl.Result{}, r.updateSnapshotStatus(ctx, snapshot, sandboxv1alpha1.SandboxSnapshotPhaseFailed, msg)
 	}
 	for _, cs := range snapshot.Status.ContainerSnapshots {
 		for i, c := range containers {

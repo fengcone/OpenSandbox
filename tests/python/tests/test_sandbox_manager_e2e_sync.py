@@ -102,9 +102,11 @@ class TestSandboxManagerE2ESync:
                 assert manager.get_sandbox_info(s3.id).status.state == "Paused"
                 s3_paused = True
             except SandboxApiException as exc:
-                if exc.status_code == 501:
+                # pause.snapshot_registry is not configured in this E2E environment;
+                # server returns 400. Keep all sandboxes Running and relax state-filter asserts.
+                if exc.status_code == 400:
                     logger.warning(
-                        "pause_sandbox not supported (HTTP %s); manager state-filter E2E uses all-Running sandboxes",
+                        "pause_sandbox not configured (HTTP %s); manager state-filter E2E uses all-Running sandboxes",
                         exc.status_code,
                     )
                 else:

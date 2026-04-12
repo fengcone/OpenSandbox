@@ -501,15 +501,15 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                 metadata = snapshot.get("metadata", {})
                 labels = metadata.get("labels", {})
                 creation_timestamp = metadata.get("creationTimestamp")
-                spec = snapshot.get("spec", {})
 
                 # Extract user metadata
                 user_metadata = {
                     k: v for k, v in labels.items() if not k.startswith("opensandbox.io/")
                 }
 
-                # Get image URI from snapshot spec (from ContainerSnapshots for multi-container)
-                container_snapshots = spec.get("containerSnapshots", [])
+                # Get image URI from snapshot status.containerSnapshots (written by controller after push)
+                snapshot_status = snapshot.get("status", {})
+                container_snapshots = snapshot_status.get("containerSnapshots", [])
                 if container_snapshots:
                     # Multi-container: use first container's image
                     image_uri = container_snapshots[0].get("imageUri", "unknown")
@@ -593,9 +593,9 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                     if snap_id and phase == "Ready" and snap_id not in workload_ids:
                         metadata = snap.get("metadata", {})
                         labels = metadata.get("labels", {})
-                        spec = snap.get("spec", {})
-                        # Get image from ContainerSnapshots (multi-container support)
-                        container_snapshots = spec.get("containerSnapshots", [])
+                        # Get image from status.containerSnapshots (written by controller after push)
+                        snap_status = snap.get("status", {})
+                        container_snapshots = snap_status.get("containerSnapshots", [])
                         if container_snapshots:
                             image_uri = container_snapshots[0].get("imageUri", "unknown")
                         else:

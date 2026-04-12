@@ -147,10 +147,11 @@ class TestSandboxManagerE2E:
             await _wait_for_state(manager=cls.manager, sandbox_id=cls.s3.id, expected_state="Paused")
             cls.s3_paused = True
         except SandboxApiException as exc:
-            # Kubernetes runtime returns 501 for pause; keep all sandboxes Running and relax state-filter asserts.
-            if exc.status_code == 501:
+            # pause.snapshot_registry is not configured in this E2E environment;
+            # server returns 400. Keep all sandboxes Running and relax state-filter asserts.
+            if exc.status_code == 400:
                 logger.warning(
-                    "pause_sandbox not supported (HTTP %s); manager state-filter E2E uses all-Running sandboxes",
+                    "pause_sandbox not configured (HTTP %s); manager state-filter E2E uses all-Running sandboxes",
                     exc.status_code,
                 )
             else:
