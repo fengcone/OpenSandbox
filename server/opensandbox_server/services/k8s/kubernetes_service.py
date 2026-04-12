@@ -785,16 +785,25 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                     },
                 )
 
-            # Re-pause: patch spec with action="Pause" to signal new pause intent
+            # Re-pause: patch spec with latest config from server so rotated credentials
+            # or updated registry settings take effect immediately (not stale from first pause).
             batch_sandbox_name = batchsandbox["metadata"]["name"]
             try:
+                spec_patch = {
+                    "sourceBatchSandboxName": batch_sandbox_name,
+                    "action": "Pause",
+                    "snapshotType": pause_config.snapshot_type if pause_config else "Rootfs",
+                    "snapshotRegistry": snapshot_registry,
+                }
+                if pause_config:
+                    if pause_config.snapshot_push_secret:
+                        spec_patch["snapshotPushSecret"] = pause_config.snapshot_push_secret
+                    if pause_config.resume_pull_secret:
+                        spec_patch["resumeImagePullSecret"] = pause_config.resume_pull_secret
                 self.snapshot_provider.patch_snapshot_spec(
                     snapshot_name=sandbox_id,
                     namespace=self.namespace,
-                    spec_patch={
-                        "sourceBatchSandboxName": batch_sandbox_name,
-                        "action": "Pause",
-                    },
+                    spec_patch=spec_patch,
                 )
                 logger.info("Patched SandboxSnapshot %s for re-pause", sandbox_id)
             except Exception as e:
