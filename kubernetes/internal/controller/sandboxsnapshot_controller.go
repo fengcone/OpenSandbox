@@ -138,8 +138,8 @@ func (r *SandboxSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if generation > observedGen {
 		phase := snapshot.Status.Phase
 		if phase == "" || phase == sandboxv1alpha1.SandboxSnapshotPhaseReady || phase == sandboxv1alpha1.SandboxSnapshotPhaseFailed {
-			// Validate spec before starting a new pause cycle (fail-fast for config errors)
-			if validateErr := r.validatePauseSpec(ctx, snapshot); validateErr != nil {
+			isValid, validateErr := r.validatePauseSpec(ctx, snapshot)
+			if !isValid {
 				log.Error(validateErr, "Spec validation failed, transitioning to Failed")
 				r.Recorder.Eventf(snapshot, corev1.EventTypeWarning, "InvalidSpec", "Spec validation failed: %v", validateErr)
 				return ctrl.Result{}, retry.RetryOnConflict(retry.DefaultBackoff, func() error {
@@ -153,7 +153,11 @@ func (r *SandboxSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 					return r.Status().Update(ctx, latest)
 				})
 			}
-			// Start new pause cycle - increment internal pause counter
+			if validateErr != nil {
+				// Transient API error (e.g. apiserver unreachable); requeue to retry.
+				log.Error(validateErr, "Transient error during spec validation, requeueing")
+				return ctrl.Result{}, validateErr
+			}
 			return r.startNewPauseCycle(ctx, snapshot)
 		}
 		// Continue current pause cycle
@@ -618,34 +622,33 @@ func (r *SandboxSnapshotReconciler) handleCommitting(ctx context.Context, snapsh
 // validatePauseSpec validates the required spec fields before starting a new pause cycle.
 // This provides fail-fast behavior for configuration errors, avoiding creating a commit Job
 // that would get stuck (e.g., missing secret causes Pod to stay in ContainerCreating).
-func (r *SandboxSnapshotReconciler) validatePauseSpec(ctx context.Context, snapshot *sandboxv1alpha1.SandboxSnapshot) error {
+//
+// Returns (isSpecError, err):
+func (r *SandboxSnapshotReconciler) validatePauseSpec(ctx context.Context, snapshot *sandboxv1alpha1.SandboxSnapshot) (isValid bool, err error) {
 	// snapshotRegistry is required
 	if snapshot.Spec.SnapshotRegistry == "" {
-		return fmt.Errorf("snapshotRegistry is required")
+		return false, fmt.Errorf("snapshotRegistry is required")
 	}
 
 	// sourceBatchSandboxName is required
 	if snapshot.Spec.SourceBatchSandboxName == "" {
-		return fmt.Errorf("sourceBatchSandboxName is required")
+		return false, fmt.Errorf("sourceBatchSandboxName is required")
 	}
-
 	// If snapshotPushSecret is specified, validate it exists
 	if snapshot.Spec.SnapshotPushSecret != "" {
 		secret := &corev1.Secret{}
-		err := r.Get(ctx, types.NamespacedName{
+		err = r.Get(ctx, types.NamespacedName{
 			Namespace: snapshot.Namespace,
 			Name:      snapshot.Spec.SnapshotPushSecret,
 		}, secret)
 		if errors.IsNotFound(err) {
-			return fmt.Errorf("snapshotPushSecret %q not found", snapshot.Spec.SnapshotPushSecret)
+			return false, fmt.Errorf("snapshotPushSecret %q not found", snapshot.Spec.SnapshotPushSecret)
 		}
 		if err != nil {
-			// Transient error, let the controller retry
-			return err
+			return true, err
 		}
 	}
-
-	return nil
+	return true, nil
 }
 
 // handleReady handles a ready snapshot.
