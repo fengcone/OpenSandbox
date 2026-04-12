@@ -126,20 +126,11 @@ func main() {
 		fmt.Printf("Container spec: %s -> %s\n", spec.Name, spec.URI)
 	}
 
-	// Step 1: Discover pod sandbox
-	fmt.Println("\n=== Step 1: Find pod sandbox ===")
-	podSandboxID, err := getPodSandboxID(podName, namespace)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: Failed to find pod: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Pod sandbox ID: %s\n", podSandboxID)
-
-	// Step 2: Find container IDs and validate
-	fmt.Println("\n=== Step 2: Find container IDs ===")
+	// Step 1: Find container IDs via nerdctl (direct containerd API, no CRI dependency)
+	fmt.Println("\n=== Step 1: Find container IDs via nerdctl ===")
 	containerMap := make(map[string]string) // Maps container name to container ID
 	for _, spec := range containerSpecs {
-		containerID, err := getContainerID(podSandboxID, spec.Name)
+		containerID, err := getContainerIDByNerdctl(podName, namespace, spec.Name)
 		if err != nil {
 			resumeAllPausedContainers()
 			fmt.Fprintf(os.Stderr, "ERROR: Failed to find container '%s': %v\n", spec.Name, err)
@@ -150,8 +141,8 @@ func main() {
 		containerMap[spec.Name] = containerID
 	}
 
-	// Step 3: Pause all containers
-	fmt.Println("\n=== Step 3: Pause all containers ===")
+	// Step 2: Pause all containers
+	fmt.Println("\n=== Step 2: Pause all containers ===")
 	pauseErrors := 0
 	for _, spec := range containerSpecs {
 		containerID := containerMap[spec.Name]
@@ -165,8 +156,8 @@ func main() {
 		}
 	}
 
-	// Step 4: Commit all containers
-	fmt.Println("\n=== Step 4: Commit all containers ===")
+	// Step 3: Commit all containers
+	fmt.Println("\n=== Step 3: Commit all containers ===")
 	committedImages := make(map[string]string) // Maps container name to committed image URI
 	commitErrors := 0
 	for _, spec := range containerSpecs {
@@ -180,8 +171,8 @@ func main() {
 		}
 	}
 
-	// Step 5: Resume all paused containers (regardless of commit success/failure)
-	fmt.Println("\n=== Step 5: Resume all paused containers ===")
+	// Step 4: Resume all paused containers (regardless of commit success/failure)
+	fmt.Println("\n=== Step 4: Resume all paused containers ===")
 	resumeAllPausedContainers()
 
 	// If there were commit errors, exit with failure after cleanup
@@ -190,8 +181,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Step 6: Push all committed images
-	fmt.Println("\n=== Step 6: Push all images ===")
+	// Step 5: Push all committed images
+	fmt.Println("\n=== Step 5: Push all images ===")
 	pushErrors := 0
 	for _, spec := range containerSpecs {
 		if _, ok := committedImages[spec.Name]; ok {
@@ -209,8 +200,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Step 7: Extract digests and output results
-	fmt.Println("\n=== Step 7: Extract digests ===")
+	// Step 6: Extract digests and output results
+	fmt.Println("\n=== Step 6: Extract digests ===")
 	digests := make(map[string]string) // Maps container name to digest
 	firstDigest := ""
 
@@ -260,38 +251,37 @@ func parseContainerSpec(specStr string) (ContainerSpec, error) {
 	}, nil
 }
 
-// getPodSandboxID uses crictl to find the pod sandbox ID
-func getPodSandboxID(podName, namespace string) (string, error) {
-	cmd := exec.Command("crictl", "pods", "--name", podName, "--namespace", namespace, "-q")
-	output, err := cmd.Output()
+// getContainerIDByNerdctl finds a container ID using nerdctl ps with Kubernetes labels.
+// This approach directly queries containerd (k8s.io namespace) without going through
+// the CRI API, making it compatible with all containerd versions.
+// Kubernetes injects standard labels on all containers:
+//   - io.kubernetes.pod.name
+//   - io.kubernetes.pod.namespace
+//   - io.kubernetes.container.name
+func getContainerIDByNerdctl(podName, podNamespace, containerName string) (string, error) {
+	// Use nerdctl ps with label filters to find the container directly
+	args := append(nerdctlBaseArgs(),
+		"ps", "-q",
+		"--filter", fmt.Sprintf("label=io.kubernetes.pod.name=%s", podName),
+		"--filter", fmt.Sprintf("label=io.kubernetes.pod.namespace=%s", podNamespace),
+		"--filter", fmt.Sprintf("label=io.kubernetes.container.name=%s", containerName),
+	)
+	cmd := exec.Command("nerdctl", args...)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to find pod %s in namespace %s: %v", podName, namespace, err)
-	}
-
-	// Handle multiple sandbox IDs - take the first one (most recent)
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	sandboxID := strings.TrimSpace(lines[0])
-	if sandboxID == "" {
-		return "", fmt.Errorf("pod sandbox not found for %s in namespace %s", podName, namespace)
-	}
-
-	return sandboxID, nil
-}
-
-// getContainerID uses crictl to find the container ID within a pod sandbox
-func getContainerID(podSandboxID, containerName string) (string, error) {
-	cmd := exec.Command("crictl", "ps", "--pod", podSandboxID, "--name", containerName, "-q")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to find container %s in pod sandbox %s: %v", containerName, podSandboxID, err)
+		return "", fmt.Errorf("nerdctl ps failed for pod=%s ns=%s container=%s: %v, output: %s",
+			podName, podNamespace, containerName, err, strings.TrimSpace(string(output)))
 	}
 
 	containerID := strings.TrimSpace(string(output))
 	if containerID == "" {
-		return "", fmt.Errorf("container %s not found in pod sandbox %s", containerName, podSandboxID)
+		return "", fmt.Errorf("container '%s' not found in pod %s/%s (nerdctl ps returned empty)",
+			containerName, podNamespace, podName)
 	}
 
-	return containerID, nil
+	// nerdctl ps -q may return multiple lines; take the first (most recently started)
+	lines := strings.Split(containerID, "\n")
+	return strings.TrimSpace(lines[0]), nil
 }
 
 // pauseContainer uses nerdctl to pause a container

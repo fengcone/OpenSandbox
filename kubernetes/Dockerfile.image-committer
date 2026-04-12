@@ -37,15 +37,16 @@ FROM alpine:3.19
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 
 # Install containerd CLI tools
+# nerdctl is used to find containers via label filters and commit/push images.
+# cri-tools (crictl) is NOT needed - we use nerdctl directly to avoid CRI API version issues.
 RUN apk add --no-cache \
     containerd-ctr \
-    cri-tools \
     curl \
     jq \
     nerdctl
 
-# Create directories for socket mounts
-RUN mkdir -p /var/run/containerd /run/k8s/containerd
+# Create directory for containerd socket mount
+RUN mkdir -p /var/run/containerd
 
 # Copy the built binary from builder stage
 COPY --from=builder /usr/local/bin/image-committer /usr/local/bin/image-committer

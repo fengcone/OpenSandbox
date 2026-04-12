@@ -124,7 +124,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 KIND_CLUSTER ?= sandbox-k8s-test-e2e
-KIND_K8S_VERSION ?= v1.27.3
+KIND_K8S_VERSION ?= v1.22.4
 GINKGO_ARGS ?=
 E2E_TIMEOUT ?= 30m
 

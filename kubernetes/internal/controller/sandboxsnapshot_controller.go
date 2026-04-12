@@ -54,9 +54,6 @@ const (
 	// ContainerdSocketPath is the default containerd socket path
 	ContainerdSocketPath = "/var/run/containerd/containerd.sock"
 
-	// CrictlSocketPath is the CRI socket path for crictl
-	CrictlSocketPath = "/run/containerd/containerd.sock"
-
 	// LabelSandboxSnapshotName is the label key for sandbox snapshot name
 	LabelSandboxSnapshotName = "sandbox.opensandbox.io/sandbox-snapshot-name"
 
@@ -73,7 +70,7 @@ type SandboxSnapshotReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
-	// ImageCommitterImage is the image for image-committer (contains ctr/crictl)
+	// ImageCommitterImage is the image for image-committer (uses nerdctl to commit/push container images)
 	ImageCommitterImage string
 
 	// CommitJobTimeout is the timeout for commit jobs (default: 10 minutes)
@@ -755,15 +752,11 @@ func (r *SandboxSnapshotReconciler) buildCommitJob(snapshot *sandboxv1alpha1.San
 		imageCommitterImage = "image-committer:dev" // Default fallback
 	}
 
-	// Build volume mounts for containerd and CRI sockets
+	// Build volume mounts for containerd socket only (nerdctl connects directly, no CRI needed)
 	volumeMounts := []corev1.VolumeMount{
 		{
 			Name:      "containerd-sock",
 			MountPath: ContainerdSocketPath,
-		},
-		{
-			Name:      "cri-sock",
-			MountPath: CrictlSocketPath,
 		},
 	}
 
@@ -774,14 +767,6 @@ func (r *SandboxSnapshotReconciler) buildCommitJob(snapshot *sandboxv1alpha1.San
 			VolumeSource: corev1.VolumeSource{
 				HostPath: &corev1.HostPathVolumeSource{
 					Path: ContainerdSocketPath,
-				},
-			},
-		},
-		{
-			Name: "cri-sock",
-			VolumeSource: corev1.VolumeSource{
-				HostPath: &corev1.HostPathVolumeSource{
-					Path: CrictlSocketPath,
 				},
 			},
 		},
@@ -854,12 +839,9 @@ func (r *SandboxSnapshotReconciler) buildCommitJob(snapshot *sandboxv1alpha1.San
 							VolumeMounts:    volumeMounts,
 							Env: []corev1.EnvVar{
 								{
+									// CONTAINERD_SOCKET is used by nerdctl to locate the containerd socket
 									Name:  "CONTAINERD_SOCKET",
 									Value: ContainerdSocketPath,
-								},
-								{
-									Name:  "CRI_RUNTIME_ENDPOINT",
-									Value: CrictlSocketPath,
 								},
 							},
 							SecurityContext: &corev1.SecurityContext{

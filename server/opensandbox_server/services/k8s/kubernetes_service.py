@@ -736,7 +736,9 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
             )
 
         # 2. Validate state
-        workload_status = self.workload_provider.get_status(batchsandbox)
+        workload_status = self._normalize_create_status(
+            self.workload_provider.get_status(batchsandbox)
+        )
         if workload_status["state"] != "Running":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
