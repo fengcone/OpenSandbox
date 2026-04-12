@@ -7,7 +7,7 @@ spec:
   sandboxId: {{.SandboxId}}
   sourceBatchSandboxName: {{.SourceBatchSandboxName}}
   snapshotType: Rootfs
-  snapshotRegistry: {{.SnapshotRegistry}}
+  snapshotRegistry: unreachable-registry.invalid:5000
   snapshotPushSecret: {{.SnapshotPushSecret}}
   resumeImagePullSecret: {{.ResumeImagePullSecret}}
   action: Pause

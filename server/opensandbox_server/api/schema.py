@@ -120,34 +120,6 @@ class NetworkPolicy(BaseModel):
         populate_by_name = True
 
 
-class PausePolicy(BaseModel):
-    """Configuration for pause/resume with rootfs snapshot."""
-
-    snapshot_type: Literal["Rootfs"] = Field(
-        "Rootfs",
-        alias="snapshotType",
-        description="Snapshot type, currently only 'Rootfs' is supported",
-    )
-    snapshot_registry: str = Field(
-        ...,
-        alias="snapshotRegistry",
-        description="OCI registry for snapshot images, e.g. registry.example.com/snapshots",
-    )
-    snapshot_push_secret_name: Optional[str] = Field(
-        None,
-        alias="snapshotPushSecret",
-        description="K8s Secret name for pushing snapshot to registry",
-    )
-    resume_image_pull_secret_name: Optional[str] = Field(
-        None,
-        alias="resumeImagePullSecret",
-        description="K8s Secret name for pulling snapshot image during resume",
-    )
-
-    class Config:
-        populate_by_name = True
-
-
 # ============================================================================
 # Volume Definitions
 # ============================================================================
@@ -414,12 +386,6 @@ class CreateSandboxRequest(BaseModel):
         None,
         description="Opaque container for provider-specific or transient parameters not covered by the core API",
     )
-    pause_policy: Optional[PausePolicy] = Field(
-        None,
-        alias="pausePolicy",
-        description="Optional pause policy for snapshot support",
-    )
-
     class Config:
         populate_by_name = True
 

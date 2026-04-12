@@ -513,6 +513,7 @@ func (r *BatchSandboxReconciler) scaleBatchSandbox(ctx context.Context, batchSan
 			return err
 		}
 		pod.Labels[LabelBatchSandboxPodIndexKey] = strconv.Itoa(idx)
+		pod.Labels[LabelBatchSandboxNameKey] = batchSandbox.Name
 		pod.Namespace = batchSandbox.Namespace
 		pod.Name = fmt.Sprintf("%s-%d", batchSandbox.Name, idx)
 		BatchSandboxScaleExpectations.ExpectScale(controllerutils.GetControllerKey(batchSandbox), expectations.Create, pod.Name)

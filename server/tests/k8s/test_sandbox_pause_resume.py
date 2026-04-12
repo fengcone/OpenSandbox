@@ -34,12 +34,11 @@ class TestPauseSandbox:
         """
         Test case: Successfully pause a running sandbox
 
-        Purpose: Verify that minimal SandboxSnapshot CR is created without
-        Pod lookup, imageUri, or resumeTemplate.
+        Purpose: Verify that SandboxSnapshot CR is created with pause config from server config.
         """
         sandbox_id = "test-sandbox-123"
 
-        # Mock BatchSandbox in Running state with pausePolicy
+        # Mock BatchSandbox in Running state (pausePolicy removed from CRD)
         k8s_service.workload_provider.get_workload.return_value = {
             "metadata": {
                 "name": sandbox_id,
@@ -47,10 +46,6 @@ class TestPauseSandbox:
             },
             "spec": {
                 "replicas": 1,
-                "pausePolicy": {
-                    "snapshotRegistry": "registry.example.com",
-                    "snapshotType": "Rootfs",
-                },
                 "template": {"spec": {"containers": [{"name": "sandbox", "image": "python:3.11"}]}},
             },
         }
@@ -81,26 +76,18 @@ class TestPauseSandbox:
         assert snapshot_cr["metadata"]["labels"]["sandbox.opensandbox.io/sandbox-id"] == sandbox_id
         assert snapshot_cr["spec"]["sandboxId"] == sandbox_id
         assert snapshot_cr["spec"]["sourceBatchSandboxName"] == sandbox_id
-        assert "pausedAt" in snapshot_cr["spec"]
-
-        for key in (
-            "snapshotType",
-            "snapshotRegistry",
-            "imageUri",
-            "resumeTemplate",
-            "sourcePodName",
-            "sourceContainerName",
-            "sourceNodeName",
-            "snapshotPushSecret",
-            "resumeImagePullSecret",
-        ):
-            assert key not in snapshot_cr["spec"]
+        assert snapshot_cr["spec"]["action"] == "Pause"
+        # Verify config values are written to spec
+        assert snapshot_cr["spec"]["snapshotType"] == "Rootfs"
+        assert snapshot_cr["spec"]["snapshotRegistry"] == "registry.example.com/snapshots"
+        assert snapshot_cr["spec"]["snapshotPushSecret"] == "push-secret"
+        assert snapshot_cr["spec"]["resumeImagePullSecret"] == "pull-secret"
 
     def test_pause_sandbox_with_secrets(self, k8s_service):
         """
-        Test case: Pause sandbox with push/pull secrets in pausePolicy
+        Test case: Pause sandbox with push/pull secrets from server config
 
-        Purpose: Verify secrets are NOT included in minimal CR — controller handles this
+        Purpose: Verify secrets from config are included in SandboxSnapshot spec
         """
         sandbox_id = "test-sandbox-secrets"
 
@@ -111,12 +98,6 @@ class TestPauseSandbox:
             },
             "spec": {
                 "replicas": 1,
-                "pausePolicy": {
-                    "snapshotRegistry": "registry.example.com",
-                    "snapshotType": "Rootfs",
-                    "snapshotPushSecret": "push-secret",
-                    "resumeImagePullSecret": "pull-secret",
-                },
                 "template": {"spec": {"containers": [{"name": "sandbox", "image": "python:3.11"}]}},
             },
         }
@@ -138,9 +119,10 @@ class TestPauseSandbox:
         snapshot_cr = call_args[0][1]
         assert snapshot_cr["spec"]["sandboxId"] == sandbox_id
         assert snapshot_cr["spec"]["sourceBatchSandboxName"] == sandbox_id
-        assert "pausedAt" in snapshot_cr["spec"]
-        assert "snapshotPushSecret" not in snapshot_cr["spec"]
-        assert "resumeImagePullSecret" not in snapshot_cr["spec"]
+        assert snapshot_cr["spec"]["action"] == "Pause"
+        # Secrets from config are written to spec
+        assert snapshot_cr["spec"]["snapshotPushSecret"] == "push-secret"
+        assert snapshot_cr["spec"]["resumeImagePullSecret"] == "pull-secret"
 
     def test_pause_sandbox_not_found(self, k8s_service):
         """
@@ -168,12 +150,11 @@ class TestPauseSandbox:
         """
         sandbox_id = "pending-sandbox"
 
-        # Mock BatchSandbox in Pending state
+        # Mock BatchSandbox in Pending state (pausePolicy removed from CRD)
         k8s_service.workload_provider.get_workload.return_value = {
             "metadata": {"name": sandbox_id},
             "spec": {
                 "replicas": 1,
-                "pausePolicy": {"snapshotRegistry": "registry.example.com"},
             },
         }
         k8s_service.workload_provider.get_status.return_value = {
@@ -192,18 +173,20 @@ class TestPauseSandbox:
 
     def test_pause_sandbox_no_pause_policy(self, k8s_service):
         """
-        Test case: Pause sandbox without pausePolicy configured
+        Test case: Pause sandbox when server config has no pause config
 
-        Purpose: Verify that 400 is returned when sandbox has no pausePolicy
+        Purpose: Verify that 400 is returned when pause.snapshot_registry is not configured
         """
-        sandbox_id = "sandbox-without-pause-policy"
+        sandbox_id = "sandbox-without-pause-config"
 
-        # Mock BatchSandbox in Running state without pausePolicy
+        # Set pause config to None to simulate missing config
+        k8s_service.app_config.pause = None
+
+        # Mock BatchSandbox in Running state
         k8s_service.workload_provider.get_workload.return_value = {
             "metadata": {"name": sandbox_id},
             "spec": {
                 "replicas": 1,
-                # No pausePolicy
             },
         }
         k8s_service.workload_provider.get_status.return_value = {
@@ -220,20 +203,19 @@ class TestPauseSandbox:
         assert exc_info.value.status_code == 400
         assert exc_info.value.detail["code"] == SandboxErrorCodes.PAUSE_POLICY_NOT_CONFIGURED
 
-    def test_pause_sandbox_snapshot_in_progress(self, k8s_service):
+    def test_pause_sandbox_snapshot_committing_conflict(self, k8s_service):
         """
-        Test case: Pause sandbox when snapshot is already in progress
+        Test case: Pause sandbox when snapshot is in Committing phase
 
-        Purpose: Verify that 409 is returned when a snapshot is already being created
+        Purpose: Verify that 409 is returned via phase-based conflict detection
         """
         sandbox_id = "sandbox-with-snapshot-in-progress"
 
-        # Mock BatchSandbox in Running state with pausePolicy
+        # Mock BatchSandbox in Running state (pausePolicy removed from CRD)
         k8s_service.workload_provider.get_workload.return_value = {
             "metadata": {"name": sandbox_id},
             "spec": {
                 "replicas": 1,
-                "pausePolicy": {"snapshotRegistry": "registry.example.com"},
             },
         }
         k8s_service.workload_provider.get_status.return_value = {
@@ -256,6 +238,91 @@ class TestPauseSandbox:
         assert exc_info.value.status_code == 409
         assert exc_info.value.detail["code"] == SandboxErrorCodes.SNAPSHOT_IN_PROGRESS
 
+    def test_pause_sandbox_snapshot_pending_conflict(self, k8s_service):
+        """
+        Test case: Pause sandbox when snapshot is in Pending phase
+
+        Purpose: Verify that 409 is returned via phase-based conflict detection
+        for Pending phase as well.
+        """
+        sandbox_id = "sandbox-with-pending-snapshot"
+
+        k8s_service.workload_provider.get_workload.return_value = {
+            "metadata": {"name": sandbox_id},
+            "spec": {
+                "replicas": 1,
+            },
+        }
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running",
+            "reason": "POD_READY_WITH_IP",
+            "message": "Pod is running",
+            "last_transition_at": datetime.now(timezone.utc),
+        }
+
+        # Mock existing snapshot in Pending phase
+        k8s_service.snapshot_provider.get_snapshot.return_value = {
+            "metadata": {"name": sandbox_id},
+            "status": {"phase": "Pending"},
+        }
+
+        with pytest.raises(HTTPException) as exc_info:
+            k8s_service.pause_sandbox(sandbox_id)
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.SNAPSHOT_IN_PROGRESS
+
+    def test_pause_sandbox_re_pause(self, k8s_service):
+        """
+        Test case: Re-pause a sandbox that already has a Ready snapshot
+
+        Purpose: Verify that patch_snapshot_spec is called with
+        sourceBatchSandboxName and action="Pause".
+        """
+        sandbox_id = "sandbox-re-pause"
+
+        k8s_service.workload_provider.get_workload.return_value = {
+            "metadata": {"name": sandbox_id, "namespace": "test-namespace"},
+            "spec": {
+                "replicas": 1,
+                "template": {"spec": {"containers": [{"name": "sandbox", "image": "python:3.11"}]}},
+            },
+        }
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running",
+            "reason": "POD_READY_WITH_IP",
+            "message": "Pod is ready",
+            "last_transition_at": datetime.now(timezone.utc),
+        }
+
+        # Mock existing snapshot in Ready phase (previous pause completed)
+        k8s_service.snapshot_provider.get_snapshot.return_value = {
+            "metadata": {"name": sandbox_id},
+            "spec": {
+                "sandboxId": sandbox_id,
+                "sourceBatchSandboxName": sandbox_id,
+                "action": "Pause",
+            },
+            "status": {"phase": "Ready"},
+        }
+
+        k8s_service.snapshot_provider.patch_snapshot_spec.return_value = {
+            "metadata": {"name": sandbox_id}
+        }
+
+        k8s_service.pause_sandbox(sandbox_id)
+
+        # Verify patch_snapshot_spec was called (not create_snapshot)
+        k8s_service.snapshot_provider.patch_snapshot_spec.assert_called_once()
+        call_args = k8s_service.snapshot_provider.patch_snapshot_spec.call_args
+        assert call_args[1]["snapshot_name"] == sandbox_id
+        spec_patch = call_args[1]["spec_patch"]
+        assert spec_patch["sourceBatchSandboxName"] == sandbox_id
+        assert spec_patch["action"] == "Pause"
+
+        # create_snapshot should NOT be called
+        k8s_service.snapshot_provider.create_snapshot.assert_not_called()
+
     def test_pause_sandbox_unsupported_replicas(self, k8s_service):
         """
         Test case: Pause sandbox with replicas != 1
@@ -269,7 +336,6 @@ class TestPauseSandbox:
             "metadata": {"name": sandbox_id},
             "spec": {
                 "replicas": 2,  # Unsupported
-                "pausePolicy": {"snapshotRegistry": "registry.example.com"},
             },
         }
         k8s_service.workload_provider.get_status.return_value = {
@@ -290,110 +356,22 @@ class TestPauseSandbox:
 class TestResumeSandbox:
     """resume_sandbox method tests"""
 
-    def test_resume_sandbox_multi_container(self, k8s_service):
+    def test_resume_sandbox_success(self, k8s_service):
         """
-        Test case: Resume sandbox with multi-container snapshots
+        Test case: Resume sandbox by setting action="Resume"
 
-        Purpose: Verify that BatchSandbox is created with correct images
-        for each container from containerSnapshots in snapshot status.
+        Purpose: Verify that patch_snapshot_spec is called with
+        action="Resume" to trigger controller-driven resume.
         """
         sandbox_id = "paused-sandbox-multi"
 
-        # Mock Snapshot in Ready phase with multi-container snapshots
+        # Mock Snapshot in Ready phase
         k8s_service.snapshot_provider.get_snapshot.return_value = {
             "metadata": {"name": sandbox_id},
             "spec": {
                 "sandboxId": sandbox_id,
-                "resumeTemplate": {
-                    "template": {
-                        "spec": {
-                            "containers": [
-                                {"name": "sandbox", "image": "old-image:latest"},
-                                {"name": "sidecar", "image": "old-sidecar:latest"},
-                            ]
-                        }
-                    },
-                    "expireTime": "2025-12-24T12:00:00Z",
-                    "pausePolicy": {"snapshotRegistry": "registry.example.com"},
-                },
-            },
-            "status": {
-                "phase": "Ready",
-                "containerSnapshots": [
-                    {
-                        "containerName": "sandbox",
-                        "imageURI": "registry.example.com/paused-sandbox-multi:sandbox-snapshot",
-                    },
-                    {
-                        "containerName": "sidecar",
-                        "imageURI": "registry.example.com/paused-sandbox-multi:sidecar-snapshot",
-                    },
-                ],
-            },
-        }
-
-        # Mock no existing BatchSandbox
-        k8s_service.workload_provider.get_workload.return_value = None
-
-        # Mock BatchSandbox creation
-        k8s_service.k8s_client.create_custom_object.return_value = {
-            "metadata": {"name": sandbox_id, "uid": "new-uid"}
-        }
-
-        # Set provider attributes
-        k8s_service.workload_provider.group = "sandbox.opensandbox.io"
-        k8s_service.workload_provider.version = "v1alpha1"
-        k8s_service.workload_provider.plural = "batchsandboxes"
-
-        # Execute
-        k8s_service.resume_sandbox(sandbox_id)
-
-        # Verify BatchSandbox was created with correct images per container
-        k8s_service.k8s_client.create_custom_object.assert_called_once()
-        call_args = k8s_service.k8s_client.create_custom_object.call_args
-        body = call_args[1]["body"]
-
-        assert body["metadata"]["name"] == sandbox_id
-        containers = body["spec"]["template"]["spec"]["containers"]
-        sandbox_container = next(c for c in containers if c["name"] == "sandbox")
-        sidecar_container = next(c for c in containers if c["name"] == "sidecar")
-        assert sandbox_container["image"] == (
-            "registry.example.com/paused-sandbox-multi:sandbox-snapshot"
-        )
-        assert sidecar_container["image"] == (
-            "registry.example.com/paused-sandbox-multi:sidecar-snapshot"
-        )
-        # Verify resumed-from-snapshot annotation
-        assert (
-            body["metadata"]["annotations"]["sandbox.opensandbox.io/resumed-from-snapshot"]
-            == "true"
-        )
-
-    def test_resume_sandbox_no_container_snapshots(self, k8s_service):
-        """
-        Test case: Resume sandbox when containerSnapshots is empty
-
-        Purpose: Verify that when containerSnapshots is empty/missing,
-        original template images are preserved (no image replacement occurs).
-        The controller now requires containerSnapshots — there is no legacy
-        single-container fallback.
-        """
-        sandbox_id = "paused-sandbox-no-cs"
-
-        # Mock Snapshot in Ready phase without containerSnapshots
-        k8s_service.snapshot_provider.get_snapshot.return_value = {
-            "metadata": {"name": sandbox_id},
-            "spec": {
-                "sandboxId": sandbox_id,
-                "resumeTemplate": {
-                    "template": {
-                        "spec": {
-                            "containers": [{"name": "sandbox", "image": "original-image:latest"}]
-                        }
-                    },
-                    "expireTime": "2025-12-24T12:00:00Z",
-                    "pausePolicy": {"snapshotRegistry": "registry.example.com"},
-                },
+                "sourceBatchSandboxName": sandbox_id,
+                "action": "Pause",
             },
             "status": {"phase": "Ready"},
         }
@@ -401,28 +379,56 @@ class TestResumeSandbox:
         # Mock no existing BatchSandbox
         k8s_service.workload_provider.get_workload.return_value = None
 
-        # Mock BatchSandbox creation
-        k8s_service.k8s_client.create_custom_object.return_value = {
-            "metadata": {"name": sandbox_id, "uid": "new-uid"}
+        # Mock patch success
+        k8s_service.snapshot_provider.patch_snapshot_spec.return_value = {
+            "metadata": {"name": sandbox_id}
         }
-
-        # Set provider attributes
-        k8s_service.workload_provider.group = "sandbox.opensandbox.io"
-        k8s_service.workload_provider.version = "v1alpha1"
-        k8s_service.workload_provider.plural = "batchsandboxes"
 
         # Execute
         k8s_service.resume_sandbox(sandbox_id)
 
-        # Verify BatchSandbox was created with original images preserved
-        k8s_service.k8s_client.create_custom_object.assert_called_once()
-        call_args = k8s_service.k8s_client.create_custom_object.call_args
-        body = call_args[1]["body"]
+        # Verify patch_snapshot_spec was called with action="Resume"
+        k8s_service.snapshot_provider.patch_snapshot_spec.assert_called_once()
+        call_args = k8s_service.snapshot_provider.patch_snapshot_spec.call_args
+        assert call_args[1]["snapshot_name"] == sandbox_id
+        assert call_args[1]["namespace"] == k8s_service.namespace
+        assert call_args[1]["spec_patch"] == {"action": "Resume"}
 
-        assert body["metadata"]["name"] == sandbox_id
-        containers = body["spec"]["template"]["spec"]["containers"]
-        # Original image preserved — no replacement since containerSnapshots is empty
-        assert containers[0]["image"] == "original-image:latest"
+    def test_resume_sandbox_with_resume_requested(self, k8s_service):
+        """
+        Test case: Resume sandbox that already has action in spec
+
+        Purpose: Verify that resume still works correctly, setting
+        action="Resume" via patch_snapshot_spec.
+        """
+        sandbox_id = "paused-sandbox-no-cs"
+
+        # Mock Snapshot in Ready phase with action="Pause"
+        k8s_service.snapshot_provider.get_snapshot.return_value = {
+            "metadata": {"name": sandbox_id},
+            "spec": {
+                "sandboxId": sandbox_id,
+                "sourceBatchSandboxName": sandbox_id,
+                "action": "Pause",
+            },
+            "status": {"phase": "Ready"},
+        }
+
+        # Mock no existing BatchSandbox
+        k8s_service.workload_provider.get_workload.return_value = None
+
+        # Mock patch success
+        k8s_service.snapshot_provider.patch_snapshot_spec.return_value = {
+            "metadata": {"name": sandbox_id}
+        }
+
+        # Execute
+        k8s_service.resume_sandbox(sandbox_id)
+
+        # Verify patch_snapshot_spec called with action="Resume"
+        k8s_service.snapshot_provider.patch_snapshot_spec.assert_called_once()
+        call_args = k8s_service.snapshot_provider.patch_snapshot_spec.call_args
+        assert call_args[1]["spec_patch"] == {"action": "Resume"}
 
     def test_resume_sandbox_not_found(self, k8s_service):
         """
@@ -516,8 +522,8 @@ class TestDeleteSandboxCleansSnapshot:
         sandbox_id = "sandbox-with-snapshot"
 
         # Mock successful deletion of both resources
-        k8s_service.workload_provider.delete_workload.return_value = None
-        k8s_service.snapshot_provider.delete_snapshot.return_value = None
+        k8s_service.workload_provider.delete_workload.return_value = True
+        k8s_service.snapshot_provider.delete_snapshot.return_value = True
 
         # Execute
         k8s_service.delete_sandbox(sandbox_id)
@@ -539,10 +545,10 @@ class TestDeleteSandboxCleansSnapshot:
         sandbox_id = "sandbox-no-snapshot"
 
         # Mock BatchSandbox deletion success
-        k8s_service.workload_provider.delete_workload.return_value = None
+        k8s_service.workload_provider.delete_workload.return_value = True
 
-        # Mock snapshot deletion raises 404 (already deleted/doesn't exist)
-        k8s_service.snapshot_provider.delete_snapshot.return_value = None
+        # Mock snapshot not found
+        k8s_service.snapshot_provider.delete_snapshot.return_value = False
 
         # Execute - should not raise
         k8s_service.delete_sandbox(sandbox_id)
@@ -559,11 +565,11 @@ class TestDeleteSandboxCleansSnapshot:
         """
         sandbox_id = "paused-sandbox-no-workload"
 
-        # Mock BatchSandbox deletion fails
-        k8s_service.workload_provider.delete_workload.side_effect = Exception("not found")
+        # Mock BatchSandbox not found
+        k8s_service.workload_provider.delete_workload.return_value = False
 
         # Mock snapshot deletion succeeds
-        k8s_service.snapshot_provider.delete_snapshot.return_value = None
+        k8s_service.snapshot_provider.delete_snapshot.return_value = True
 
         # Execute - should not raise since snapshot was deleted
         k8s_service.delete_sandbox(sandbox_id)
@@ -580,9 +586,9 @@ class TestDeleteSandboxCleansSnapshot:
         """
         sandbox_id = "nonexistent-sandbox"
 
-        # Mock both deletions fail
-        k8s_service.workload_provider.delete_workload.side_effect = Exception("not found")
-        k8s_service.snapshot_provider.delete_snapshot.side_effect = Exception("not found")
+        # Mock both resources not found
+        k8s_service.workload_provider.delete_workload.return_value = False
+        k8s_service.snapshot_provider.delete_snapshot.return_value = False
 
         # Execute and verify
         with pytest.raises(HTTPException) as exc_info:

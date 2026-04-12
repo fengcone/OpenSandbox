@@ -37,6 +37,15 @@ const (
 	SandboxSnapshotPhaseFailed     SandboxSnapshotPhase = "Failed"
 )
 
+// +kubebuilder:validation:Enum=Pause;Resume
+// SnapshotAction defines the desired action for a snapshot.
+type SnapshotAction string
+
+const (
+	SnapshotActionPause  SnapshotAction = "Pause"
+	SnapshotActionResume SnapshotAction = "Resume"
+)
+
 // ContainerSnapshot represents a snapshot of a single container.
 type ContainerSnapshot struct {
 	// ContainerName is the name of the container.
@@ -49,9 +58,18 @@ type ContainerSnapshot struct {
 }
 
 // SandboxSnapshotSpec defines the desired state of SandboxSnapshot.
+// Spec only contains user input fields (filled by Server), Controller never writes to spec.
 type SandboxSnapshotSpec struct {
 	// SandboxID is the stable public identifier for the sandbox.
 	SandboxID string `json:"sandboxId"`
+
+	// SourceBatchSandboxName is the name of the source BatchSandbox.
+	SourceBatchSandboxName string `json:"sourceBatchSandboxName"`
+
+	// Action expresses the desired action for this snapshot.
+	// Controller performs the action when generation > observedGeneration.
+	// +optional
+	Action SnapshotAction `json:"action,omitempty"`
 
 	// SnapshotType indicates the type of snapshot (default: Rootfs).
 	// +optional
@@ -59,18 +77,10 @@ type SandboxSnapshotSpec struct {
 	// +kubebuilder:default=Rootfs
 	SnapshotType SnapshotType `json:"snapshotType,omitempty"`
 
-	// SourceBatchSandboxName is the name of the source BatchSandbox.
-	SourceBatchSandboxName string `json:"sourceBatchSandboxName"`
-
-	// SourcePodName is the name of the source Pod.
+	// SnapshotRegistry is the OCI registry for snapshot images.
 	// +optional
 	// +kubebuilder:validation:Optional
-	SourcePodName string `json:"sourcePodName,omitempty"`
-
-	// SourceNodeName is the node where the source Pod runs.
-	// +optional
-	// +kubebuilder:validation:Optional
-	SourceNodeName string `json:"sourceNodeName,omitempty"`
+	SnapshotRegistry string `json:"snapshotRegistry,omitempty"`
 
 	// SnapshotPushSecret is the Secret name for pushing to registry.
 	// +optional
@@ -79,34 +89,6 @@ type SandboxSnapshotSpec struct {
 	// ResumeImagePullSecret is the Secret name for pulling snapshot during resume.
 	// +optional
 	ResumeImagePullSecret string `json:"resumeImagePullSecret,omitempty"`
-
-	// ResumeTemplate contains enough information to reconstruct BatchSandbox.
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	// +kubebuilder:validation:Schemaless
-	ResumeTemplate *runtime.RawExtension `json:"resumeTemplate,omitempty"`
-
-	// SnapshotRegistry is the OCI registry for snapshot images.
-	// +optional
-	// +kubebuilder:validation:Optional
-	SnapshotRegistry string `json:"snapshotRegistry,omitempty"`
-
-	// ContainerSnapshots holds per-container snapshot information.
-	// The controller fills this during resolution.
-	// +optional
-	// +kubebuilder:validation:Optional
-	ContainerSnapshots []ContainerSnapshot `json:"containerSnapshots,omitempty"`
-
-	// PausedAt is the timestamp when pause was initiated.
-	PausedAt metav1.Time `json:"pausedAt"`
-
-	// PauseVersion is incremented by the server to request a pause.
-	// Controller ACKs by setting status.pauseVersion to match when entering Committing phase.
-	PauseVersion int `json:"pauseVersion"`
-
-	// ResumeVersion is incremented by the server to request a resume.
-	// Controller ACKs by setting status.resumeVersion to match when starting resume.
-	ResumeVersion int `json:"resumeVersion"`
 }
 
 // SnapshotRecord represents a single pause or resume event in the snapshot history.
@@ -122,12 +104,28 @@ type SnapshotRecord struct {
 }
 
 // SandboxSnapshotStatus defines the observed state of SandboxSnapshot.
+// Status contains all fields filled by Controller.
 type SandboxSnapshotStatus struct {
 	// Phase indicates the current phase of the snapshot.
 	Phase SandboxSnapshotPhase `json:"phase,omitempty"`
 
 	// Message provides human-readable status information.
 	Message string `json:"message,omitempty"`
+
+	// SourcePodName is the name of the source Pod (resolved by Controller).
+	// +optional
+	SourcePodName string `json:"sourcePodName,omitempty"`
+
+	// SourceNodeName is the node where the source Pod runs (resolved by Controller).
+	// +optional
+	SourceNodeName string `json:"sourceNodeName,omitempty"`
+
+	// ResumeTemplate contains enough information to reconstruct BatchSandbox.
+	// Built by Controller from source BatchSandbox template.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
+	ResumeTemplate *runtime.RawExtension `json:"resumeTemplate,omitempty"`
 
 	// ReadyAt is the timestamp when the snapshot became Ready.
 	ReadyAt *metav1.Time `json:"readyAt,omitempty"`
@@ -136,11 +134,26 @@ type SandboxSnapshotStatus struct {
 	// +optional
 	ContainerSnapshots []ContainerSnapshot `json:"containerSnapshots,omitempty"`
 
-	// PauseVersion is ACKed by the controller when entering Committing phase.
+	// PauseVersion is the controller's internal pause cycle counter.
+	// Incremented each time a new pause cycle begins.
 	PauseVersion int `json:"pauseVersion"`
 
-	// ResumeVersion is ACKed by the controller when starting resume.
+	// ResumeVersion is the controller's internal resume cycle counter.
+	// Incremented each time a resume is processed.
 	ResumeVersion int `json:"resumeVersion"`
+
+	// ObservedGeneration is the most recent spec generation observed by the controller.
+	// Used to detect new pause/resume requests.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// LastPauseAt records when the last pause was initiated.
+	// +optional
+	LastPauseAt *metav1.Time `json:"lastPauseAt,omitempty"`
+
+	// LastResumeAt records when the last resume was initiated.
+	// +optional
+	LastResumeAt *metav1.Time `json:"lastResumeAt,omitempty"`
 
 	// History records each pause/resume cycle.
 	// +optional

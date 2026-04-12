@@ -665,13 +665,14 @@ spec:
         self, mock_k8s_client, mock_batchsandbox_list_response
     ):
         """
-        Test case: Verify successfully deleting existing sandbox
+        Test case: Verify successfully deleting existing sandbox returns True
         """
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_k8s_client.get_custom_object.return_value = mock_batchsandbox_list_response["items"][0]
-        
-        provider.delete_workload("test-id", "test-ns")
-        
+
+        result = provider.delete_workload("test-id", "test-ns")
+
+        assert result is True
         mock_k8s_client.delete_custom_object.assert_called_once_with(
             group="sandbox.opensandbox.io",
             version="v1alpha1",
@@ -681,17 +682,16 @@ spec:
             grace_period_seconds=0
         )
     
-    def test_delete_workload_raises_when_not_found(self, mock_k8s_client):
+    def test_delete_workload_returns_not_found_when_not_exists(self, mock_k8s_client):
         """
-        Test case: Verify exception raised when not found
+        Test case: Verify False is returned when workload not found
         """
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_k8s_client.get_custom_object.return_value = None
-        
-        with pytest.raises(Exception) as exc_info:
-            provider.delete_workload("test-id", "test-ns")
-        
-        assert "not found" in str(exc_info.value)
+
+        result = provider.delete_workload("test-id", "test-ns")
+
+        assert result is False
     
     def test_delete_workload_sets_grace_period_zero(
         self, mock_k8s_client, mock_batchsandbox_list_response
@@ -701,9 +701,10 @@ spec:
         """
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_k8s_client.get_custom_object.return_value = mock_batchsandbox_list_response["items"][0]
-        
-        provider.delete_workload("test-id", "test-ns")
-        
+
+        result = provider.delete_workload("test-id", "test-ns")
+
+        assert result is True
         call_kwargs = mock_k8s_client.delete_custom_object.call_args.kwargs
         assert call_kwargs["grace_period_seconds"] == 0
     

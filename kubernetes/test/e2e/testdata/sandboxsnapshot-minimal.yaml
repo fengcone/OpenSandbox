@@ -6,6 +6,7 @@ metadata:
 spec:
   sandboxId: {{.SandboxId}}
   sourceBatchSandboxName: {{.SourceBatchSandboxName}}
-  pausedAt: {{.PausedAt}}
-  pauseVersion: 1
-  resumeVersion: 0
+  snapshotRegistry: {{.SnapshotRegistry}}
+  snapshotPushSecret: {{.SnapshotPushSecret}}
+  resumeImagePullSecret: {{.ResumeImagePullSecret}}
+  action: Pause

@@ -121,7 +121,6 @@ class BatchSandboxProvider(WorkloadProvider):
         annotations: Optional[Dict[str, str]] = None,
         egress_auth_token: Optional[str] = None,
         egress_mode: str = EGRESS_MODE_DNS,
-        pause_policy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Create a BatchSandbox workload.
@@ -187,7 +186,6 @@ class BatchSandboxProvider(WorkloadProvider):
                 entrypoint=entrypoint,
                 env=env,
                 annotations=annotations,
-                pause_policy=pause_policy,
             )
         
         # Extract extra pod spec fragments from template (volumes/volumeMounts only).
@@ -254,9 +252,6 @@ class BatchSandboxProvider(WorkloadProvider):
             },
         }
 
-        # Add pausePolicy if provided
-        if pause_policy:
-            spec["pausePolicy"] = pause_policy
         runtime_manifest = {
             "apiVersion": f"{self.group}/{self.version}",
             "kind": "BatchSandbox",
@@ -354,7 +349,6 @@ class BatchSandboxProvider(WorkloadProvider):
         entrypoint: List[str],
         env: Dict[str, str],
         annotations: Optional[Dict[str, str]] = None,
-        pause_policy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Create BatchSandbox workload from a pre-warmed resource pool.
@@ -371,7 +365,6 @@ class BatchSandboxProvider(WorkloadProvider):
             expires_at: Expiration time
             entrypoint: Container entrypoint command (can be customized)
             env: Environment variables (can be customized)
-            pause_policy: Optional pause/resume policy configuration
 
         Returns:
             Dict with 'name' and 'uid' of created BatchSandbox
@@ -386,8 +379,6 @@ class BatchSandboxProvider(WorkloadProvider):
         }
         if expires_at is not None:
             spec["expireTime"] = expires_at.isoformat()
-        if pause_policy is not None:
-            spec["pausePolicy"] = pause_policy
         runtime_manifest = {
             "apiVersion": f"{self.group}/{self.version}",
             "kind": "BatchSandbox",
@@ -735,12 +726,16 @@ class BatchSandboxProvider(WorkloadProvider):
 
         return None
     
-    def delete_workload(self, sandbox_id: str, namespace: str) -> None:
-        """Delete BatchSandbox workload."""
+    def delete_workload(self, sandbox_id: str, namespace: str) -> bool:
+        """Delete BatchSandbox workload.
+
+        Returns:
+            True if deleted, False if not found. Raises on error.
+        """
         batchsandbox = self.get_workload(sandbox_id, namespace)
         if not batchsandbox:
-            raise Exception(f"BatchSandbox for sandbox {sandbox_id} not found")
-        
+            return False
+
         self.k8s_client.delete_custom_object(
             group=self.group,
             version=self.version,
@@ -749,7 +744,8 @@ class BatchSandboxProvider(WorkloadProvider):
             name=batchsandbox["metadata"]["name"],
             grace_period_seconds=0,
         )
-    
+        return True
+
     def list_workloads(self, namespace: str, label_selector: str) -> List[Dict[str, Any]]:
         """List BatchSandboxes matching label selector."""
         return self.k8s_client.list_custom_objects(

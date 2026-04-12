@@ -64,6 +64,9 @@ const (
 
 	// AnnotationResumedFromSnapshot marks a BatchSandbox as resumed from a snapshot
 	AnnotationResumedFromSnapshot = "sandbox.opensandbox.io/resumed-from-snapshot"
+
+	// MaxHistoryRecords is the maximum number of history records to keep
+	MaxHistoryRecords = 10
 )
 
 // SandboxSnapshotReconciler reconciles a SandboxSnapshot object
@@ -87,6 +90,7 @@ type SandboxSnapshotReconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop
@@ -119,33 +123,45 @@ func (r *SandboxSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{RequeueAfter: time.Millisecond * 100}, nil
 	}
 
-	// Version-based dispatch: check pause and resume versions
-	specPV := snapshot.Spec.PauseVersion
-	statusPV := snapshot.Status.PauseVersion
-	specRV := snapshot.Spec.ResumeVersion
-	statusRV := snapshot.Status.ResumeVersion
+	// Generation-driven dispatch
+	generation := snapshot.Generation
+	observedGen := snapshot.Status.ObservedGeneration
 
 	log.Info("Reconciling SandboxSnapshot",
 		"snapshot", snapshot.Name,
 		"phase", snapshot.Status.Phase,
-		"specPV", specPV, "statusPV", statusPV,
-		"specRV", specRV, "statusRV", statusRV,
+		"generation", generation, "observedGeneration", observedGen,
+		"action", snapshot.Spec.Action,
 	)
 
-	// 1. Pause requested: spec.pauseVersion > status.pauseVersion
-	if specPV > statusPV {
+	// 1. Resume requested: action == "Resume" with new generation
+	if snapshot.Spec.Action == sandboxv1alpha1.SnapshotActionResume && generation > observedGen {
+		return r.handleResume(ctx, snapshot)
+	}
+
+	// 2. New pause requested: action == "Pause" (or unset) with new generation
+	if generation > observedGen {
 		phase := snapshot.Status.Phase
 		if phase == "" || phase == sandboxv1alpha1.SandboxSnapshotPhaseReady || phase == sandboxv1alpha1.SandboxSnapshotPhaseFailed {
-			// Initialize or re-initialize for a new pause cycle
-			log.Info("Pause version mismatch, resetting to Pending",
-				"specPV", specPV, "statusPV", statusPV)
-			if err := r.updateSnapshotStatus(ctx, snapshot, sandboxv1alpha1.SandboxSnapshotPhasePending, "Pause requested"); err != nil {
-				return ctrl.Result{}, err
+			// Validate spec before starting a new pause cycle (fail-fast for config errors)
+			if validateErr := r.validatePauseSpec(ctx, snapshot); validateErr != nil {
+				log.Error(validateErr, "Spec validation failed, transitioning to Failed")
+				r.Recorder.Eventf(snapshot, corev1.EventTypeWarning, "InvalidSpec", "Spec validation failed: %v", validateErr)
+				return ctrl.Result{}, retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+					latest := &sandboxv1alpha1.SandboxSnapshot{}
+					if err := r.Get(ctx, types.NamespacedName{Namespace: snapshot.Namespace, Name: snapshot.Name}, latest); err != nil {
+						return err
+					}
+					latest.Status.Phase = sandboxv1alpha1.SandboxSnapshotPhaseFailed
+					latest.Status.Message = validateErr.Error()
+					latest.Status.ObservedGeneration = latest.Generation
+					return r.Status().Update(ctx, latest)
+				})
 			}
-			return ctrl.Result{RequeueAfter: time.Millisecond * 100}, nil
+			// Start new pause cycle - increment internal pause counter
+			return r.startNewPauseCycle(ctx, snapshot)
 		}
-
-		// Normal phase state machine
+		// Continue current pause cycle
 		switch phase {
 		case sandboxv1alpha1.SandboxSnapshotPhasePending:
 			return r.handlePending(ctx, snapshot)
@@ -157,14 +173,13 @@ func (r *SandboxSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 	}
 
-	// 2. Resume requested: spec.resumeVersion > status.resumeVersion
-	if specRV > statusRV {
-		return r.handleResume(ctx, snapshot)
-	}
-
-	// 3. Idle — versions match, dispatch by phase for cleanup
+	// 3. Idle — generation matches, dispatch by phase for ongoing work
 	phase := snapshot.Status.Phase
 	switch phase {
+	case sandboxv1alpha1.SandboxSnapshotPhasePending:
+		return r.handlePending(ctx, snapshot)
+	case sandboxv1alpha1.SandboxSnapshotPhaseCommitting:
+		return r.handleCommitting(ctx, snapshot)
 	case sandboxv1alpha1.SandboxSnapshotPhaseReady:
 		return r.handleReady(ctx, snapshot)
 	case sandboxv1alpha1.SandboxSnapshotPhaseFailed:
@@ -175,18 +190,69 @@ func (r *SandboxSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 }
 
-// ensureResolved resolves the template and fills spec.ContainerSnapshots with per-container
-// image URIs along with pause policy info. It looks up the source BatchSandbox and
-// fills in missing spec fields from the BatchSandbox, including pausePolicy, template
-// for container snapshots, and ResumeTemplate for resuming after pause.
-func (r *SandboxSnapshotReconciler) ensureResolved(ctx context.Context, snapshot *sandboxv1alpha1.SandboxSnapshot) error {
+// startNewPauseCycle initializes a new pause cycle by incrementing the internal pause counter
+// and resetting the phase to Pending.
+// It also clears SourcePodName and SourceNodeName to force re-resolution for each pause cycle.
+func (r *SandboxSnapshotReconciler) startNewPauseCycle(ctx context.Context, snapshot *sandboxv1alpha1.SandboxSnapshot) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// If ContainerSnapshots already have all values populated, re-generate image URIs
+	// Increment internal pause counter
+	newPauseVersion := snapshot.Status.PauseVersion + 1
+	now := metav1.Now()
+	log.Info("Starting new pause cycle",
+		"pauseVersion", newPauseVersion,
+		"generation", snapshot.Generation,
+	)
+
+	// Reset to Pending phase with incremented PauseVersion and LastPauseAt
+	// Also clear SourcePodName and SourceNodeName to force re-resolution
+	// This is important when resuming from a Pool-based sandbox:
+	// - First pause: uses pool pod (e.g., pool-xxx)
+	// - Resume: creates a new BatchSandbox (non-pool mode)
+	// - Second pause: should use the new pod (e.g., sandbox-id-0), not the old pool pod
+	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		latestSnapshot := &sandboxv1alpha1.SandboxSnapshot{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: snapshot.Namespace, Name: snapshot.Name}, latestSnapshot); err != nil {
+			return err
+		}
+		latestSnapshot.Status.Phase = sandboxv1alpha1.SandboxSnapshotPhasePending
+		latestSnapshot.Status.Message = "Pause requested"
+		latestSnapshot.Status.PauseVersion = newPauseVersion
+		latestSnapshot.Status.LastPauseAt = &now
+		// Clear source pod info to force re-resolution for this pause cycle
+		latestSnapshot.Status.SourcePodName = ""
+		latestSnapshot.Status.SourceNodeName = ""
+		return r.Status().Update(ctx, latestSnapshot)
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: time.Millisecond * 100}, nil
+}
+
+// resolvedSnapshotData holds the resolved data for a snapshot.
+// This is used internally by the controller and not persisted in spec.
+type resolvedSnapshotData struct {
+	containerSnapshots    []sandboxv1alpha1.ContainerSnapshot
+	sourcePodName         string
+	sourceNodeName        string
+	snapshotType          sandboxv1alpha1.SnapshotType
+	snapshotRegistry      string
+	snapshotPushSecret    string
+	resumeImagePullSecret string
+	resumeTemplate        *runtime.RawExtension
+}
+
+// ensureResolved resolves the template and returns container snapshots info.
+// It no longer modifies spec.ContainerSnapshots - the caller is responsible
+// for persisting the resolved data to status.
+func (r *SandboxSnapshotReconciler) ensureResolved(ctx context.Context, snapshot *sandboxv1alpha1.SandboxSnapshot) (*resolvedSnapshotData, error) {
+	log := logf.FromContext(ctx)
+
+	// If status.ContainerSnapshots already populated, re-generate image URIs
 	// with current pauseVersion (they may be stale from a previous pause cycle).
-	if len(snapshot.Spec.ContainerSnapshots) > 0 {
+	if len(snapshot.Status.ContainerSnapshots) > 0 {
 		allResolved := true
-		for _, cs := range snapshot.Spec.ContainerSnapshots {
+		for _, cs := range snapshot.Status.ContainerSnapshots {
 			if cs.ContainerName != "" && cs.ImageURI != "" {
 				continue
 			}
@@ -194,29 +260,30 @@ func (r *SandboxSnapshotReconciler) ensureResolved(ctx context.Context, snapshot
 			break
 		}
 
-		// Check also if essential pause policy fields are populated
-		if allResolved && snapshot.Spec.SnapshotType != "" && snapshot.Spec.SnapshotRegistry != "" {
+		// Check also if essential pause policy fields are populated in spec
+		// AND sourcePodName is already populated (otherwise we need to re-resolve)
+		if allResolved && snapshot.Spec.SnapshotType != "" && snapshot.Spec.SnapshotRegistry != "" && snapshot.Status.SourcePodName != "" {
 			// Re-generate image URIs to reflect current pauseVersion
 			registry := snapshot.Spec.SnapshotRegistry
-			needsUpdate := false
-			for i := range snapshot.Spec.ContainerSnapshots {
-				cs := &snapshot.Spec.ContainerSnapshots[i]
-				expectedURI := fmt.Sprintf("%s/%s-%s:snapshot-v%d", registry, snapshot.Spec.SandboxID, cs.ContainerName, snapshot.Spec.PauseVersion)
+			containerSnapshots := make([]sandboxv1alpha1.ContainerSnapshot, len(snapshot.Status.ContainerSnapshots))
+			for i, cs := range snapshot.Status.ContainerSnapshots {
+				expectedURI := fmt.Sprintf("%s/%s-%s:snapshot-v%d", registry, snapshot.Spec.SandboxID, cs.ContainerName, snapshot.Status.PauseVersion)
 				if cs.ImageURI != expectedURI {
 					log.Info("Updating stale image URI for re-pause", "container", cs.ContainerName, "old", cs.ImageURI, "new", expectedURI)
-					cs.ImageURI = expectedURI
-					needsUpdate = true
+					containerSnapshots[i] = sandboxv1alpha1.ContainerSnapshot{
+						ContainerName: cs.ContainerName,
+						ImageURI:      expectedURI,
+					}
+				} else {
+					containerSnapshots[i] = cs
 				}
 			}
-			// Persist the updated image URIs to etcd
-			if needsUpdate {
-				if err := r.Update(ctx, snapshot); err != nil {
-					return fmt.Errorf("failed to update image URIs for re-pause: %w", err)
-				}
-				log.Info("Persisted updated image URIs for re-pause")
-			}
-			log.Info("Snapshot already resolved, skipping full resolution")
-			return nil
+			log.Info("Snapshot already resolved, returning updated container snapshots")
+			return &resolvedSnapshotData{
+				containerSnapshots: containerSnapshots,
+				sourcePodName:      snapshot.Status.SourcePodName,
+				sourceNodeName:     snapshot.Status.SourceNodeName,
+			}, nil
 		}
 	}
 
@@ -226,30 +293,31 @@ func (r *SandboxSnapshotReconciler) ensureResolved(ctx context.Context, snapshot
 		Name:      snapshot.Spec.SourceBatchSandboxName,
 		Namespace: snapshot.Namespace,
 	}, bs); err != nil {
-		return fmt.Errorf("failed to get source BatchSandbox %s: %w", snapshot.Spec.SourceBatchSandboxName, err)
+		return nil, fmt.Errorf("failed to get source BatchSandbox %s: %w", snapshot.Spec.SourceBatchSandboxName, err)
 	}
 
-	// If SourcePodName is empty, find the running pod for this sandbox
-	if snapshot.Spec.SourcePodName == "" {
+	data := &resolvedSnapshotData{}
+
+	// If SourcePodName is empty in status, find the running pod for this sandbox
+	if snapshot.Status.SourcePodName == "" {
 		pod, err := r.findPodForSandbox(ctx, bs, snapshot.Namespace)
 		if err != nil {
-			return fmt.Errorf("failed to find running pod for sandbox: %w", err)
+			return nil, fmt.Errorf("failed to find running pod for sandbox: %w", err)
 		}
-		snapshot.Spec.SourcePodName = pod.Name
-		snapshot.Spec.SourceNodeName = pod.Spec.NodeName
+		data.sourcePodName = pod.Name
+		data.sourceNodeName = pod.Spec.NodeName
 		log.Info("Resolved pod info", "pod", pod.Name, "node", pod.Spec.NodeName)
 	}
 
-	// Fill in pause policy fields from BatchSandbox
-	if bs.Spec.PausePolicy != nil {
-		// Extract pause policy fields
-		snapshot.Spec.SnapshotType = bs.Spec.PausePolicy.SnapshotType
-		snapshot.Spec.SnapshotRegistry = bs.Spec.PausePolicy.SnapshotRegistry
-		snapshot.Spec.SnapshotPushSecret = bs.Spec.PausePolicy.SnapshotPushSecret
-		snapshot.Spec.ResumeImagePullSecret = bs.Spec.PausePolicy.ResumeImagePullSecret
-	} else {
-		return fmt.Errorf("BatchSandbox %s has no pausePolicy configured", bs.Name)
+	// Read pause configuration from snapshot.Spec (filled by Server from config)
+	// No longer read from BatchSandbox.PausePolicy (field removed from CRD)
+	if snapshot.Spec.SnapshotRegistry == "" {
+		return nil, fmt.Errorf("snapshotRegistry not configured in snapshot spec")
 	}
+	data.snapshotRegistry = snapshot.Spec.SnapshotRegistry
+	data.snapshotType = snapshot.Spec.SnapshotType
+	data.snapshotPushSecret = snapshot.Spec.SnapshotPushSecret
+	data.resumeImagePullSecret = snapshot.Spec.ResumeImagePullSecret
 
 	// Resolve the template: prefer spec.Template, otherwise look up Pool CR
 	var template *corev1.PodTemplateSpec
@@ -263,55 +331,46 @@ func (r *SandboxSnapshotReconciler) ensureResolved(ctx context.Context, snapshot
 			Name:      bs.Spec.PoolRef,
 			Namespace: snapshot.Namespace,
 		}, pool); err != nil {
-			return fmt.Errorf("failed to look up Pool CR %s to get template: %w", bs.Spec.PoolRef, err)
+			return nil, fmt.Errorf("failed to look up Pool CR %s to get template: %w", bs.Spec.PoolRef, err)
 		}
 		if pool.Spec.Template == nil {
-			return fmt.Errorf("Pool %s has no template defined", bs.Spec.PoolRef)
+			return nil, fmt.Errorf("Pool %s has no template defined", bs.Spec.PoolRef)
 		}
 		template = pool.Spec.Template
 		log.Info("Resolved template via Pool CR", "pool", bs.Spec.PoolRef)
 	} else {
-		return fmt.Errorf("BatchSandbox %s has neither template nor poolRef, cannot resolve", bs.Name)
+		return nil, fmt.Errorf("BatchSandbox %s has neither template nor poolRef, cannot resolve", bs.Name)
 	}
 
 	// Build ResumeTemplate from the template with resolved fields
+	// Note: pausePolicy is NOT included - pause config comes from server config, not from BatchSandbox
 	resumeTemplateData := map[string]interface{}{
-		"template": convertPodTemplateSpecToMap(template), // Convert the template to map[string]interface{}
+		"template": convertPodTemplateSpecToMap(template),
 	}
 
-	// Add or update BatchSandbox-level fields to ResumeTemplate if they exist
+	// Add BatchSandbox-level fields to ResumeTemplate if they exist
 	if bs.Spec.ExpireTime != nil {
-		resumeTemplateData["expireTime"] = bs.Spec.ExpireTime // Copy the expireTime
-	}
-	if bs.Spec.PausePolicy != nil {
-		// We add the original pause policy back to the ResumeTemplate
-		// So that resumed sandboxes retain the same pause capability
-		resumeTemplateData["pausePolicy"] = map[string]interface{}{
-			"snapshotType":              bs.Spec.PausePolicy.SnapshotType,
-			"snapshotRegistry":          bs.Spec.PausePolicy.SnapshotRegistry,
-			"snapshotPushSecret":    bs.Spec.PausePolicy.SnapshotPushSecret,
-			"resumeImagePullSecret": bs.Spec.PausePolicy.ResumeImagePullSecret,
-		}
+		resumeTemplateData["expireTime"] = bs.Spec.ExpireTime
 	}
 
 	// Convert the entire resume template to RawExtension
 	resumeTemplateRaw, err := convertToRawExtension(resumeTemplateData)
 	if err != nil {
-		return fmt.Errorf("failed to convert resume template to raw extension: %w", err)
+		return nil, fmt.Errorf("failed to convert resume template to raw extension: %w", err)
 	}
-	snapshot.Spec.ResumeTemplate = &resumeTemplateRaw
+	data.resumeTemplate = &resumeTemplateRaw
 
 	// Resolve snapshot registry
-	registry := snapshot.Spec.SnapshotRegistry
+	registry := data.snapshotRegistry
 	if registry == "" {
-		return fmt.Errorf("snapshotRegistry not resolved in pausePolicy")
+		return nil, fmt.Errorf("snapshotRegistry not resolved in pausePolicy")
 	}
 
 	// Build ContainerSnapshots from the template containers
 	containerSnapshots := make([]sandboxv1alpha1.ContainerSnapshot, 0, len(template.Spec.Containers))
 	for _, c := range template.Spec.Containers {
 		// Include pauseVersion in image tag to distinguish between multiple pauses
-		imageURI := fmt.Sprintf("%s/%s-%s:snapshot-v%d", registry, snapshot.Spec.SandboxID, c.Name, snapshot.Spec.PauseVersion)
+		imageURI := fmt.Sprintf("%s/%s-%s:snapshot-v%d", registry, snapshot.Spec.SandboxID, c.Name, snapshot.Status.PauseVersion)
 		containerSnapshots = append(containerSnapshots, sandboxv1alpha1.ContainerSnapshot{
 			ContainerName: c.Name,
 			ImageURI:      imageURI,
@@ -319,18 +378,12 @@ func (r *SandboxSnapshotReconciler) ensureResolved(ctx context.Context, snapshot
 	}
 
 	if len(containerSnapshots) == 0 {
-		return fmt.Errorf("no containers found in template for BatchSandbox %s", bs.Name)
+		return nil, fmt.Errorf("no containers found in template for BatchSandbox %s", bs.Name)
 	}
 
-	// Update the snapshot spec with resolved fields
-	snapshot.Spec.ContainerSnapshots = containerSnapshots
-
-	if err := r.Update(ctx, snapshot); err != nil {
-		return fmt.Errorf("failed to update snapshot with resolved fields: %w", err)
-	}
-
-	log.Info("Resolved and updated snapshot fields", "count", len(containerSnapshots), "snapshot", snapshot.Name)
-	return nil
+	data.containerSnapshots = containerSnapshots
+	log.Info("Resolved snapshot fields", "count", len(containerSnapshots), "snapshot", snapshot.Name)
+	return data, nil
 }
 
 // findPodForSandbox finds the running pod belonging to a BatchSandbox.
@@ -360,33 +413,68 @@ func (r *SandboxSnapshotReconciler) findPodForSandbox(ctx context.Context, bs *s
 		}
 	}
 
-	// Fallback: list pods owned by this BatchSandbox
+	// Fallback 1: find by batch-sandbox name label (efficient label selector)
 	podList := &corev1.PodList{}
 	if err := r.List(ctx, podList,
 		client.InNamespace(namespace),
-		client.MatchingLabels{LabelBatchSandboxPodIndexKey: "0"},
+		client.MatchingLabels{LabelBatchSandboxNameKey: bs.Name},
 	); err != nil {
 		return nil, fmt.Errorf("failed to list pods: %w", err)
 	}
-
-	// Filter pods owned by this BatchSandbox
 	for i := range podList.Items {
 		pod := &podList.Items[i]
-		for _, owner := range pod.OwnerReferences {
-			if owner.Kind == "BatchSandbox" && owner.Name == bs.Name && pod.Status.Phase == corev1.PodRunning {
-				return pod, nil
-			}
+		if pod.Status.Phase == corev1.PodRunning {
+			return pod, nil
 		}
 	}
 
-	// Last resort: find by naming convention {batchSandboxName}-0
+	// Fallback 2: find by naming convention {batchSandboxName}-0
 	podName := fmt.Sprintf("%s-0", bs.Name)
 	pod := &corev1.Pod{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: podName}, pod); err == nil {
-		return pod, nil
+		if pod.Status.Phase == corev1.PodRunning {
+			return pod, nil
+		}
 	}
 
 	return nil, fmt.Errorf("no running pod found for BatchSandbox %s", bs.Name)
+}
+
+// persistResolvedData persists the resolved data to status only.
+// Per pause-policy-refactor.md design, Controller never writes to spec to avoid generation increments.
+// All resolved fields (SourcePodName, SourceNodeName, ResumeTemplate, ContainerSnapshots) go to status.
+func (r *SandboxSnapshotReconciler) persistResolvedData(ctx context.Context, snapshot *sandboxv1alpha1.SandboxSnapshot, data *resolvedSnapshotData) error {
+	log := logf.FromContext(ctx)
+
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		latestSnapshot := &sandboxv1alpha1.SandboxSnapshot{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: snapshot.Namespace, Name: snapshot.Name}, latestSnapshot); err != nil {
+			return err
+		}
+		r.fillSnapshotStatus(data, latestSnapshot)
+
+		if err := r.Status().Update(ctx, latestSnapshot); err != nil {
+			return err
+		}
+		log.Info("Persisted resolved data to status", "containerCount", len(data.containerSnapshots))
+		return nil
+	})
+}
+
+func (r *SandboxSnapshotReconciler) fillSnapshotStatus(data *resolvedSnapshotData, snapshot *sandboxv1alpha1.SandboxSnapshot) {
+	// Update status fields only - spec is filled by Server, Controller never modifies it
+	if data.sourcePodName != "" {
+		snapshot.Status.SourcePodName = data.sourcePodName
+	}
+	if data.sourceNodeName != "" {
+		snapshot.Status.SourceNodeName = data.sourceNodeName
+	}
+	if data.resumeTemplate != nil {
+		snapshot.Status.ResumeTemplate = data.resumeTemplate
+	}
+	if len(data.containerSnapshots) > 0 {
+		snapshot.Status.ContainerSnapshots = data.containerSnapshots
+	}
 }
 
 // handlePending creates the commit Job after ensuring resolution of container snapshots
@@ -394,13 +482,21 @@ func (r *SandboxSnapshotReconciler) handlePending(ctx context.Context, snapshot 
 	log := logf.FromContext(ctx)
 
 	// Ensure container snapshots are resolved before creating the commit job
-	if err := r.ensureResolved(ctx, snapshot); err != nil {
+	data, err := r.ensureResolved(ctx, snapshot)
+	if err != nil {
 		log.Error(err, "Failed to resolve container snapshots")
 		if updateErr := r.updateSnapshotStatus(ctx, snapshot, sandboxv1alpha1.SandboxSnapshotPhaseFailed, err.Error()); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{}, nil
 	}
+
+	// Persist resolved data to status
+	if err := r.persistResolvedData(ctx, snapshot, data); err != nil {
+		log.Error(err, "Failed to persist resolved data")
+		return ctrl.Result{}, err
+	}
+	r.fillSnapshotStatus(data, snapshot)
 
 	// Build and create the commit Job
 	job, err := r.buildCommitJob(snapshot)
@@ -468,15 +564,12 @@ func (r *SandboxSnapshotReconciler) handleCommitting(ctx context.Context, snapsh
 		log.Info("Commit job succeeded", "job", jobName)
 		r.Recorder.Eventf(snapshot, corev1.EventTypeNormal, "JobSucceeded", "Commit job succeeded")
 
-		// Populate status.ContainerSnapshots from spec.ContainerSnapshots
-		statusSnapshots := make([]sandboxv1alpha1.ContainerSnapshot, len(snapshot.Spec.ContainerSnapshots))
-		copy(statusSnapshots, snapshot.Spec.ContainerSnapshots)
-
+		// ContainerSnapshots already in status from handlePending
 		// Transition to Ready and append pause history record
 		now := metav1.Now()
 		pauseRecord := sandboxv1alpha1.SnapshotRecord{
 			Action:    "Pause",
-			Version:   snapshot.Spec.PauseVersion,
+			Version:   snapshot.Status.PauseVersion,
 			Timestamp: now,
 			Message:   "Snapshot is ready",
 		}
@@ -488,9 +581,8 @@ func (r *SandboxSnapshotReconciler) handleCommitting(ctx context.Context, snapsh
 			latestSnapshot.Status.Phase = sandboxv1alpha1.SandboxSnapshotPhaseReady
 			latestSnapshot.Status.Message = "Snapshot is ready"
 			latestSnapshot.Status.ReadyAt = &now
-			latestSnapshot.Status.ContainerSnapshots = statusSnapshots
-			latestSnapshot.Status.PauseVersion = snapshot.Spec.PauseVersion
-			latestSnapshot.Status.History = append(latestSnapshot.Status.History, pauseRecord)
+			latestSnapshot.Status.ObservedGeneration = snapshot.Generation
+			latestSnapshot.Status.History = appendHistoryRecord(latestSnapshot.Status.History, pauseRecord)
 			return r.Status().Update(ctx, latestSnapshot)
 		}); err != nil {
 			log.Error(err, "Failed to update snapshot status to Ready")
@@ -526,6 +618,39 @@ func (r *SandboxSnapshotReconciler) handleCommitting(ctx context.Context, snapsh
 	// Job still running, requeue
 	log.Info("Commit job still running", "job", jobName)
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+}
+
+// validatePauseSpec validates the required spec fields before starting a new pause cycle.
+// This provides fail-fast behavior for configuration errors, avoiding creating a commit Job
+// that would get stuck (e.g., missing secret causes Pod to stay in ContainerCreating).
+func (r *SandboxSnapshotReconciler) validatePauseSpec(ctx context.Context, snapshot *sandboxv1alpha1.SandboxSnapshot) error {
+	// snapshotRegistry is required
+	if snapshot.Spec.SnapshotRegistry == "" {
+		return fmt.Errorf("snapshotRegistry is required")
+	}
+
+	// sourceBatchSandboxName is required
+	if snapshot.Spec.SourceBatchSandboxName == "" {
+		return fmt.Errorf("sourceBatchSandboxName is required")
+	}
+
+	// If snapshotPushSecret is specified, validate it exists
+	if snapshot.Spec.SnapshotPushSecret != "" {
+		secret := &corev1.Secret{}
+		err := r.Get(ctx, types.NamespacedName{
+			Namespace: snapshot.Namespace,
+			Name:      snapshot.Spec.SnapshotPushSecret,
+		}, secret)
+		if errors.IsNotFound(err) {
+			return fmt.Errorf("snapshotPushSecret %q not found", snapshot.Spec.SnapshotPushSecret)
+		}
+		if err != nil {
+			// Transient error, let the controller retry
+			return err
+		}
+	}
+
+	return nil
 }
 
 // handleReady handles a ready snapshot.
@@ -689,7 +814,7 @@ func (r *SandboxSnapshotReconciler) buildCommitJob(snapshot *sandboxv1alpha1.San
 
 	// Build commit command using new multi-container format:
 	// image-committer <pod_name> <namespace> <container1:uri1> [<container2:uri2> ...]
-	containerSnapshots := snapshot.Spec.ContainerSnapshots
+	containerSnapshots := snapshot.Status.ContainerSnapshots
 
 	if len(containerSnapshots) == 0 {
 		return nil, fmt.Errorf("no container snapshots specified in snapshot spec")
@@ -701,7 +826,7 @@ func (r *SandboxSnapshotReconciler) buildCommitJob(snapshot *sandboxv1alpha1.San
 		containerSpecs = append(containerSpecs, spec)
 	}
 	fullCommand := fmt.Sprintf("/usr/local/bin/image-committer %s %s %s",
-		snapshot.Spec.SourcePodName,
+		snapshot.Status.SourcePodName,
 		snapshot.Namespace,
 		strings.Join(containerSpecs, " "),
 	)
@@ -745,7 +870,7 @@ func (r *SandboxSnapshotReconciler) buildCommitJob(snapshot *sandboxv1alpha1.San
 						},
 					},
 					Volumes:  volumes,
-					NodeName: snapshot.Spec.SourceNodeName,
+					NodeName: snapshot.Status.SourceNodeName,
 				},
 			},
 		},
@@ -761,7 +886,7 @@ func (r *SandboxSnapshotReconciler) buildCommitJob(snapshot *sandboxv1alpha1.San
 
 // getJobName returns the job name for a snapshot
 func (r *SandboxSnapshotReconciler) getJobName(snapshot *sandboxv1alpha1.SandboxSnapshot) string {
-	return fmt.Sprintf("%s-commit-v%d", snapshot.Name, snapshot.Spec.PauseVersion)
+	return fmt.Sprintf("%s-commit-v%d", snapshot.Name, snapshot.Status.PauseVersion)
 }
 
 // updateSnapshotStatus updates the snapshot status
@@ -774,6 +899,7 @@ func (r *SandboxSnapshotReconciler) updateSnapshotStatus(ctx context.Context, sn
 
 		latestSnapshot.Status.Phase = phase
 		latestSnapshot.Status.Message = message
+		latestSnapshot.Status.ObservedGeneration = latestSnapshot.Generation
 
 		return r.Status().Update(ctx, latestSnapshot)
 	})
@@ -795,14 +921,24 @@ func ptrToInt32(v int32) *int32 {
 	return &v
 }
 
+// appendHistoryRecord appends a new record to history and trims to MaxHistoryRecords
+func appendHistoryRecord(history []sandboxv1alpha1.SnapshotRecord, record sandboxv1alpha1.SnapshotRecord) []sandboxv1alpha1.SnapshotRecord {
+	history = append(history, record)
+	// Keep only the most recent MaxHistoryRecords
+	if len(history) > MaxHistoryRecords {
+		history = history[len(history)-MaxHistoryRecords:]
+	}
+	return history
+}
+
 // handleResume creates a new BatchSandbox from the snapshot resumeTemplate.
 // It ACKs resumeVersion and appends a resume history record.
 func (r *SandboxSnapshotReconciler) handleResume(ctx context.Context, snapshot *sandboxv1alpha1.SandboxSnapshot) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	log.Info("Handling resume request", "snapshot", snapshot.Name, "resumeVersion", snapshot.Spec.ResumeVersion)
+	log.Info("Handling resume request", "snapshot", snapshot.Name)
 
-	// Validate prerequisites
-	if snapshot.Spec.ResumeTemplate == nil || snapshot.Spec.ResumeTemplate.Raw == nil {
+	// Validate prerequisites - ResumeTemplate is in status, filled by Controller
+	if snapshot.Status.ResumeTemplate == nil || snapshot.Status.ResumeTemplate.Raw == nil {
 		log.Error(fmt.Errorf("resumeTemplate is empty"), "Cannot resume without resumeTemplate")
 		return ctrl.Result{}, nil
 	}
@@ -812,9 +948,9 @@ func (r *SandboxSnapshotReconciler) handleResume(ctx context.Context, snapshot *
 		return ctrl.Result{}, nil
 	}
 
-	// Parse resumeTemplate
+	// Parse resumeTemplate from status
 	var resumeTemplate map[string]interface{}
-	if err := json.Unmarshal(snapshot.Spec.ResumeTemplate.Raw, &resumeTemplate); err != nil {
+	if err := json.Unmarshal(snapshot.Status.ResumeTemplate.Raw, &resumeTemplate); err != nil {
 		log.Error(err, "Failed to parse resumeTemplate")
 		return ctrl.Result{}, nil
 	}
@@ -858,6 +994,8 @@ func (r *SandboxSnapshotReconciler) handleResume(ctx context.Context, snapshot *
 	}
 
 	// Build BatchSandbox manifest
+	// Note: pausePolicy is NOT copied - BatchSandbox no longer has this field
+	// Pause config comes from server config, not from CRD
 	bsSpec := map[string]interface{}{
 		"replicas": 1,
 		"template": template,
@@ -866,11 +1004,6 @@ func (r *SandboxSnapshotReconciler) handleResume(ctx context.Context, snapshot *
 	// Add expireTime from resumeTemplate if present
 	if expireTime, ok := resumeTemplate["expireTime"]; ok && expireTime != nil {
 		bsSpec["expireTime"] = expireTime
-	}
-
-	// Add pausePolicy from resumeTemplate if present
-	if pausePolicy, ok := resumeTemplate["pausePolicy"]; ok && pausePolicy != nil {
-		bsSpec["pausePolicy"] = pausePolicy
 	}
 
 	batchsandboxManifest := map[string]interface{}{
@@ -882,6 +1015,7 @@ func (r *SandboxSnapshotReconciler) handleResume(ctx context.Context, snapshot *
 			"labels": map[string]interface{}{
 				"sandbox.opensandbox.io/sandbox-id":            snapshot.Spec.SandboxID,
 				"sandbox.opensandbox.io/resumed-from-snapshot": "true",
+				LabelBatchSandboxNameKey:                       snapshot.Spec.SandboxID,
 			},
 			"annotations": map[string]interface{}{
 				"sandbox.opensandbox.io/resumed-from-snapshot": "true",
@@ -916,11 +1050,12 @@ func (r *SandboxSnapshotReconciler) handleResume(ctx context.Context, snapshot *
 	r.Recorder.Eventf(snapshot, corev1.EventTypeNormal, "ResumedBatchSandbox",
 		"Created BatchSandbox %s from snapshot", snapshot.Spec.SandboxID)
 
-	// ACK resumeVersion and append resume history record
+	// ACK resume: increment internal resume counter, set observedGeneration and LastResumeAt
+	newResumeVersion := snapshot.Status.ResumeVersion + 1
 	now := metav1.Now()
 	resumeRecord := sandboxv1alpha1.SnapshotRecord{
 		Action:    "Resume",
-		Version:   snapshot.Spec.ResumeVersion,
+		Version:   newResumeVersion,
 		Timestamp: now,
 		Message:   fmt.Sprintf("Resumed to BatchSandbox %s", snapshot.Spec.SandboxID),
 	}
@@ -929,11 +1064,13 @@ func (r *SandboxSnapshotReconciler) handleResume(ctx context.Context, snapshot *
 		if err := r.Get(ctx, types.NamespacedName{Namespace: snapshot.Namespace, Name: snapshot.Name}, latestSnapshot); err != nil {
 			return err
 		}
-		latestSnapshot.Status.ResumeVersion = snapshot.Spec.ResumeVersion
-		latestSnapshot.Status.History = append(latestSnapshot.Status.History, resumeRecord)
+		latestSnapshot.Status.ResumeVersion = newResumeVersion
+		latestSnapshot.Status.ObservedGeneration = snapshot.Generation
+		latestSnapshot.Status.LastResumeAt = &now
+		latestSnapshot.Status.History = appendHistoryRecord(latestSnapshot.Status.History, resumeRecord)
 		return r.Status().Update(ctx, latestSnapshot)
 	}); err != nil {
-		log.Error(err, "Failed to ACK resumeVersion")
+		log.Error(err, "Failed to ACK resume")
 		return ctrl.Result{}, err
 	}
 
@@ -991,5 +1128,3 @@ func (r *SandboxSnapshotReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("sandboxsnapshot").
 		Complete(r)
 }
-
-// Add the JSON import for marshaling/unmarshaling

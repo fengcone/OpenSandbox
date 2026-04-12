@@ -6,7 +6,3 @@ metadata:
 spec:
   replicas: 1
   poolRef: {{.PoolName}}
-  pausePolicy:
-    snapshotRegistry: {{.SnapshotRegistry}}
-    snapshotPushSecret: {{.SnapshotPushSecret}}
-    resumeImagePullSecret: {{.ResumeImagePullSecret}}

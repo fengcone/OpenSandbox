@@ -205,7 +205,7 @@ def fixed_datetime():
 @pytest.fixture
 def k8s_app_config(k8s_runtime_config):
     """Provide complete app configuration (Kubernetes type)"""
-    from opensandbox_server.config import AppConfig, RuntimeConfig, ServerConfig
+    from opensandbox_server.config import AppConfig, RuntimeConfig, ServerConfig, PauseConfig
     
     return AppConfig(
         server=ServerConfig(
@@ -219,6 +219,11 @@ def k8s_app_config(k8s_runtime_config):
             execd_image="ghcr.io/opensandbox/execd:test",
         ),
         kubernetes=k8s_runtime_config,
+        pause=PauseConfig(
+            snapshot_registry="registry.example.com/snapshots",
+            snapshot_push_secret="push-secret",
+            resume_pull_secret="pull-secret",
+        ),
     )
 
 

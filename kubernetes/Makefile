@@ -167,17 +167,6 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
-# Pause/Resume E2E test variables
-REGISTRY_IMAGE ?= registry:2
-REGISTRY_NODE_PORT ?= 30500
-REGISTRY_USERNAME ?= testuser
-REGISTRY_PASSWORD ?= testpass
-
-.PHONY: test-e2e-pause-resume
-test-e2e-pause-resume: setup-test-e2e ## Run pause/resume E2E tests
-	CONTROLLER_IMG=$(CONTROLLER_IMG) TASK_EXECUTOR_IMG=$(TASK_EXECUTOR_IMG) \
-		KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="PauseResume"
-
 # Common E2E setup targets - install CRDs and controller for any Kind cluster
 .PHONY: install-e2e-deps
 install-e2e-deps:

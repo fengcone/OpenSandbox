@@ -808,13 +808,14 @@ class TestDeleteSandbox:
         Purpose: Verify that existing sandbox can be successfully deleted
         """
         k8s_service.workload_provider.get_workload.return_value = mock_workload
-        k8s_service.workload_provider.delete_workload.return_value = None
-        
+        k8s_service.workload_provider.delete_workload.return_value = True
+        k8s_service.snapshot_provider.delete_snapshot.return_value = False
+
         k8s_service.delete_sandbox("test-sandbox-id")
         
         k8s_service.workload_provider.delete_workload.assert_called_once_with(
-            sandbox_id="test-sandbox-id",
-            namespace=k8s_service.namespace
+            "test-sandbox-id",
+            k8s_service.namespace
         )
     
     def test_delete_nonexistent_sandbox_raises_404(self, k8s_service):
@@ -823,9 +824,10 @@ class TestDeleteSandbox:
         
         Purpose: Verify that 404 exception is raised when deleting nonexistent sandbox
         """
-        # Mock delete_workload to raise exception containing "not found"
-        k8s_service.workload_provider.delete_workload.side_effect = Exception("Sandbox not found")
-        
+        # Mock both resources not found
+        k8s_service.workload_provider.delete_workload.return_value = False
+        k8s_service.snapshot_provider.delete_snapshot.return_value = False
+
         with pytest.raises(HTTPException) as exc_info:
             k8s_service.delete_sandbox("nonexistent-id")
         

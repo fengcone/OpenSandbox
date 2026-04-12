@@ -52,7 +52,6 @@ class WorkloadProvider(ABC):
         annotations: Optional[Dict[str, str]] = None,
         egress_auth_token: Optional[str] = None,
         egress_mode: str = EGRESS_MODE_DNS,
-        pause_policy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Create a new workload resource.
@@ -98,16 +97,15 @@ class WorkloadProvider(ABC):
         pass
     
     @abstractmethod
-    def delete_workload(self, sandbox_id: str, namespace: str) -> None:
-        """
-        Delete a workload resource.
-        
+    def delete_workload(self, sandbox_id: str, namespace: str) -> bool:
+        """Delete a workload resource.
+
         Args:
             sandbox_id: Unique sandbox identifier
             namespace: Kubernetes namespace
-            
-        Raises:
-            ApiException: If deletion fails
+
+        Returns:
+            True if deleted, False if not found. Raises on error.
         """
         pass
     

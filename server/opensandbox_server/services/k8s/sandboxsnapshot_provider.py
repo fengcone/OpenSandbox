@@ -125,12 +125,15 @@ class SandboxSnapshotProvider:
         self,
         snapshot_name: str,
         namespace: str,
-    ) -> None:
+    ) -> bool:
         """Delete a SandboxSnapshot.
 
         Args:
             snapshot_name: Name of the SandboxSnapshot.
             namespace: Kubernetes namespace.
+
+        Returns:
+            True if deleted, False if not found. Raises on error.
         """
         try:
             self.k8s_client.delete_custom_object(
@@ -140,9 +143,10 @@ class SandboxSnapshotProvider:
                 plural=self.PLURAL,
                 name=snapshot_name,
             )
+            return True
         except ApiException as e:
             if e.status == 404:
-                return  # Already deleted
+                return False
             logger.warning(
                 "Failed to delete SandboxSnapshot %s/%s: %s",
                 namespace,

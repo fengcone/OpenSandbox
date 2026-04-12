@@ -383,7 +383,6 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                 egress_mode=egress_mode,
                 volumes=request.volumes,
                 platform=request.platform,
-                pause_policy=request.pause_policy.model_dump(by_alias=True) if request.pause_policy else None,
             )
             
             logger.info(
@@ -666,27 +665,51 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
     
     def delete_sandbox(self, sandbox_id: str) -> None:
         """
-        Delete sandbox and associated snapshot.
+        Delete sandbox by deleting BatchSandbox and SandboxSnapshot if they exist.
+
+        Args:
+            sandbox_id: Unique sandbox identifier
+
+        Raises:
+            HTTPException: 404 if neither BatchSandbox nor SandboxSnapshot exist
+            HTTPException: 500 if deletion fails
         """
-        deleted = False
-
-        # 1. Delete BatchSandbox
+        # 1. Delete workload
         try:
-            self.workload_provider.delete_workload(sandbox_id, self.namespace)
-            deleted = True
-            logger.info("Deleted BatchSandbox %s", sandbox_id)
+            workload_deleted = self.workload_provider.delete_workload(sandbox_id, self.namespace)
+            if workload_deleted:
+                logger.info("Deleted BatchSandbox %s", sandbox_id)
+            else:
+                logger.debug("BatchSandbox %s not found", sandbox_id)
         except Exception as e:
-            logger.debug("BatchSandbox %s not found or already deleted: %s", sandbox_id, e)
+            logger.error("Failed to delete BatchSandbox %s: %s", sandbox_id, e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.K8S_DELETE_FAILED,
+                    "message": f"Failed to delete BatchSandbox '{sandbox_id}': {e}",
+                },
+            )
 
-        # 2. Delete SandboxSnapshot
+        # 2. Delete snapshot
         try:
-            self.snapshot_provider.delete_snapshot(sandbox_id, self.namespace)
-            deleted = True
-            logger.info("Deleted SandboxSnapshot %s", sandbox_id)
+            snapshot_deleted = self.snapshot_provider.delete_snapshot(sandbox_id, self.namespace)
+            if snapshot_deleted:
+                logger.info("Deleted SandboxSnapshot %s", sandbox_id)
+            else:
+                logger.debug("SandboxSnapshot %s not found", sandbox_id)
         except Exception as e:
-            logger.debug("SandboxSnapshot %s not found or already deleted: %s", sandbox_id, e)
+            logger.error("Failed to delete SandboxSnapshot %s: %s", sandbox_id, e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.K8S_DELETE_FAILED,
+                    "message": f"Failed to delete SandboxSnapshot '{sandbox_id}': {e}",
+                },
+            )
 
-        if not deleted:
+        # 3. Check if anything was deleted
+        if not workload_deleted and not snapshot_deleted:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
@@ -733,23 +756,25 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                 },
             )
 
-        if not spec.get("pausePolicy"):
+        # 3. Get pause config from server config (not from BatchSandbox.pausePolicy which is removed)
+        pause_config = self.app_config.pause if self.app_config.pause else None
+        snapshot_registry = pause_config.snapshot_registry if pause_config else ""
+        if not snapshot_registry:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
                     "code": SandboxErrorCodes.PAUSE_POLICY_NOT_CONFIGURED,
-                    "message": "Sandbox does not have pausePolicy configured",
+                    "message": "Pause is not configured: set pause.snapshot_registry in server config",
                 },
             )
 
-        # 3. Check for in-flight snapshot or determine if re-pause
+        # 4. Check for existing snapshot
         existing_snapshot = self.snapshot_provider.get_snapshot(sandbox_id, self.namespace)
 
         if existing_snapshot:
-            # In-flight pause: versions don't match means controller is still processing
-            spec_pv = existing_snapshot.get("spec", {}).get("pauseVersion", 0)
-            status_pv = existing_snapshot.get("status", {}).get("pauseVersion", 0)
-            if spec_pv > status_pv:
+            # Phase-based conflict detection
+            phase = existing_snapshot.get("status", {}).get("phase")
+            if phase in ("Pending", "Committing"):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
@@ -758,24 +783,18 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                     },
                 )
 
-            # Re-pause: patch existing Snapshot CR with incremented pauseVersion
-            current_pause_version = status_pv
-            new_pause_version = current_pause_version + 1
+            # Re-pause: patch spec with action="Pause" to signal new pause intent
+            batch_sandbox_name = batchsandbox["metadata"]["name"]
             try:
                 self.snapshot_provider.patch_snapshot_spec(
                     snapshot_name=sandbox_id,
                     namespace=self.namespace,
                     spec_patch={
-                        "pauseVersion": new_pause_version,
-                        "pausedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                        "sourceBatchSandboxName": batchsandbox["metadata"]["name"],
+                        "sourceBatchSandboxName": batch_sandbox_name,
+                        "action": "Pause",
                     },
                 )
-                logger.info(
-                    "Patched SandboxSnapshot %s pauseVersion=%d for re-pause",
-                    sandbox_id,
-                    new_pause_version,
-                )
+                logger.info("Patched SandboxSnapshot %s for re-pause", sandbox_id)
             except Exception as e:
                 logger.error("Failed to patch SandboxSnapshot for re-pause: %s", e)
                 raise HTTPException(
@@ -787,8 +806,22 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                 )
             return
 
-        # 4. First pause: create minimal SandboxSnapshot CR
+        # 5. First pause: create SandboxSnapshot CR with pause config from server
         batch_sandbox_name = batchsandbox["metadata"]["name"]
+        snapshot_spec = {
+            "sandboxId": sandbox_id,
+            "sourceBatchSandboxName": batch_sandbox_name,
+            "action": "Pause",
+            "snapshotType": pause_config.snapshot_type if pause_config else "Rootfs",
+            "snapshotRegistry": snapshot_registry,
+        }
+        # Add optional secrets from config
+        if pause_config:
+            if pause_config.snapshot_push_secret:
+                snapshot_spec["snapshotPushSecret"] = pause_config.snapshot_push_secret
+            if pause_config.resume_pull_secret:
+                snapshot_spec["resumeImagePullSecret"] = pause_config.resume_pull_secret
+
         snapshot_body = {
             "apiVersion": f"{SandboxSnapshotProvider.GROUP}/{SandboxSnapshotProvider.VERSION}",
             "kind": "SandboxSnapshot",
@@ -799,13 +832,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                     "sandbox.opensandbox.io/sandbox-id": sandbox_id,
                 },
             },
-            "spec": {
-                "sandboxId": sandbox_id,
-                "sourceBatchSandboxName": batch_sandbox_name,
-                "pausedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "pauseVersion": 1,
-                "resumeVersion": 0,
-            },
+            "spec": snapshot_spec,
         }
 
         try:
@@ -825,7 +852,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
         """
         Resume sandbox by patching SandboxSnapshot CR to trigger controller-driven resume.
 
-        The controller watches for spec.resumeVersion > status.resumeVersion and
+        The controller watches for spec.action == "Resume" and
         creates the BatchSandbox from resumeTemplate.
         """
         # 1. Get SandboxSnapshot
@@ -861,20 +888,16 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                 },
             )
 
-        # 4. Increment resumeVersion to trigger controller resume
-        current_resume_version = snapshot.get("status", {}).get("resumeVersion", 0)
-        new_resume_version = current_resume_version + 1
-
+        # 4. Signal resume intent with action="Resume"
         try:
             self.snapshot_provider.patch_snapshot_spec(
                 snapshot_name=sandbox_id,
                 namespace=self.namespace,
-                spec_patch={"resumeVersion": new_resume_version},
+                spec_patch={"action": "Resume"},
             )
             logger.info(
-                "Patched SandboxSnapshot %s resumeVersion=%d to trigger resume",
+                "Patched SandboxSnapshot %s with action=Resume to trigger resume",
                 sandbox_id,
-                new_resume_version,
             )
         except Exception as e:
             logger.error("Failed to patch SandboxSnapshot for resume: %s", e)

@@ -79,13 +79,21 @@ var _ = BeforeSuite(func() {
 	err = utils.LoadImageToKindClusterWithName(utils.ImageCommitterImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the image-committer image into Kind")
 
-	// TODO  docker pull
-	By("loading the registry:2 image on Kind (required for pause/resume tests)")
+	By("pulling the registry:2 image (required for pause/resume tests)")
+	cmd = exec.Command("docker", "pull", "--platform", "linux/amd64", "registry:2")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to pull registry:2 image")
+
+	By("loading the registry:2 image on Kind")
 	err = utils.LoadImageToKindClusterWithName("registry:2")
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the registry:2 image into Kind")
 
-	//TODO ensure this
-	By("loading the alpine image on Kind (required for commit jobs)")
+	By("pulling the alpine image (required for commit jobs)")
+	cmd = exec.Command("docker", "pull", "alpine:latest")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to pull alpine:latest image")
+
+	By("loading the alpine image on Kind")
 	err = utils.LoadImageToKindClusterWithName("alpine:latest")
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the alpine image into Kind")
 })

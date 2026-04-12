@@ -438,22 +438,21 @@ class EgressConfig(BaseModel):
 class PauseConfig(BaseModel):
     """Pause/resume configuration for snapshot support."""
 
-    default_snapshot_registry: str = Field(
+    snapshot_registry: str = Field(
         default="",
-        description="Default registry for snapshots when pausePolicy.snapshotRegistry is not set.",
+        description="Registry for snapshots, e.g. registry.example.com/snapshots.",
     )
-    committer_image: str = Field(
-        default="containerd/containerd:1.7",
-        description="Image used by commit Job Pod for rootfs snapshot.",
+    snapshot_push_secret: str = Field(
+        default="",
+        description="K8s Secret name for pushing snapshots to registry.",
     )
-    cleanup_snapshot_image_on_delete: bool = Field(
-        default=False,
-        description="Whether to delete snapshot image from registry when sandbox is deleted.",
+    resume_pull_secret: str = Field(
+        default="",
+        description="K8s Secret name for pulling snapshot images during resume.",
     )
-    commit_timeout_seconds: int = Field(
-        default=600,
-        ge=1,
-        description="Timeout for commit job in seconds.",
+    snapshot_type: str = Field(
+        default="Rootfs",
+        description="Snapshot type: Rootfs (full root filesystem) or other types.",
     )
 
 

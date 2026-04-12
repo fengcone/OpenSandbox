@@ -141,7 +141,6 @@ class AgentSandboxProvider(WorkloadProvider):
         annotations: Optional[Dict[str, str]] = None,
         egress_auth_token: Optional[str] = None,
         egress_mode: str = EGRESS_MODE_DNS,
-        pause_policy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create an agent-sandbox Sandbox CRD workload."""
         if self.runtime_class:
@@ -427,11 +426,15 @@ class AgentSandboxProvider(WorkloadProvider):
 
         return None
 
-    def delete_workload(self, sandbox_id: str, namespace: str) -> None:
-        """Delete the Sandbox CRD for the given sandbox ID."""
+    def delete_workload(self, sandbox_id: str, namespace: str) -> bool:
+        """Delete the Sandbox CRD for the given sandbox ID.
+
+        Returns:
+            True if deleted, False if not found. Raises on error.
+        """
         sandbox = self.get_workload(sandbox_id, namespace)
         if not sandbox:
-            raise Exception(f"Sandbox for sandbox {sandbox_id} not found")
+            return False
 
         self.k8s_client.delete_custom_object(
             group=self.group,
@@ -441,6 +444,7 @@ class AgentSandboxProvider(WorkloadProvider):
             name=sandbox["metadata"]["name"],
             grace_period_seconds=0,
         )
+        return True
 
     def list_workloads(self, namespace: str, label_selector: str) -> List[Dict[str, Any]]:
         """List Sandbox CRDs matching the given label selector."""
