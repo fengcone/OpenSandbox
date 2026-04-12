@@ -681,3 +681,29 @@ class TestDeriveSandboxState:
 
         assert state == "Failed"
         assert reason == "SNAPSHOT_FAILED"
+
+    def test_derive_state_snapshot_failed_with_running_workload(self, k8s_service):
+        """P2: Snapshot failed but workload still running should return Running."""
+        batchsandbox = {
+            "metadata": {
+                "name": "test",
+                "annotations": {},
+            },
+            "status": {},
+        }
+        snapshot = {
+            "metadata": {"name": "test"},
+            "status": {"phase": "Failed", "message": "Push failed"},
+        }
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running",
+            "reason": "POD_RUNNING",
+            "message": "Pod is running",
+        }
+
+        state, reason, message = k8s_service._derive_sandbox_state(batchsandbox, snapshot)
+
+        # When snapshot fails but workload still exists and is running,
+        # we should return the workload state, not Failed
+        assert state == "Running"
+        assert reason == "POD_RUNNING"

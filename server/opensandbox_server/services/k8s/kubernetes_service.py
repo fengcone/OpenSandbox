@@ -1097,48 +1097,58 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
         """
         Derive sandbox state from BatchSandbox and SnapshotSnapshot.
 
+        Priority:
+        1. If BatchSandbox exists and is running → return workload state
+           (even if snapshot failed, the workload is still usable)
+        2. If snapshot in progress → Pausing
+        3. If no workload but snapshot ready → Paused
+        4. If no workload and snapshot failed → Failed
+        5. If nothing exists → NotFound
+
         Returns:
             Tuple of (state, reason, message)
         """
-        # Snapshot failed
-        if snapshot and snapshot.get("status", {}).get("phase") == "Failed":
-            return (
-                "Failed",
-                "SNAPSHOT_FAILED",
-                snapshot.get("status", {}).get("message", "Snapshot failed"),
-            )
+        snapshot_phase = None
+        if snapshot:
+            snapshot_phase = snapshot.get("status", {}).get("phase")
 
-        # Pausing (both exist, snapshot in progress)
-        if batchsandbox and snapshot:
-            phase = snapshot.get("status", {}).get("phase")
-            # Check if BatchSandbox is resumed from snapshot
+        # 1. BatchSandbox exists - check if it's the active workload
+        if batchsandbox:
             annotations = batchsandbox.get("metadata", {}).get("annotations", {})
-            if annotations.get("sandbox.opensandbox.io/resumed-from-snapshot") == "true":
-                # Resumed sandbox - return actual workload status
-                status = self.workload_provider.get_status(batchsandbox)
-                return (status["state"], status["reason"], status["message"])
-            if phase in ("Pending", "Committing"):
-                return ("Pausing", f"SNAPSHOT_{phase.upper()}", f"Snapshot is {phase.lower()}")
-            if phase == "Ready":
+            is_resumed = annotations.get("sandbox.opensandbox.io/resumed-from-snapshot") == "true"
+            status = self.workload_provider.get_status(batchsandbox)
+            workload_state = status["state"]
+
+            # Resumed sandbox in transient state
+            if is_resumed and workload_state != "Running":
+                return ("Resuming", "RESUMING", "Restoring from snapshot")
+
+            # Snapshot in progress → Pausing (but workload still active)
+            if snapshot_phase in ("Pending", "Committing"):
+                return ("Pausing", f"SNAPSHOT_{snapshot_phase.upper()}", f"Snapshot is {snapshot_phase.lower()}")
+
+            # Snapshot ready but BatchSandbox still exists → cleanup in progress
+            if snapshot_phase == "Ready" and not is_resumed:
                 return ("Pausing", "SNAPSHOT_READY_CLEANUP", "Releasing resources")
 
-        # Paused (no workload, snapshot ready)
-        if not batchsandbox and snapshot:
-            phase = snapshot.get("status", {}).get("phase")
-            if phase == "Ready":
+            # Normal workload state (Running, Pending, Failed, etc.)
+            # This includes: snapshot Failed but workload still running → return workload state
+            return (workload_state, status["reason"], status["message"])
+
+        # 2. No BatchSandbox - derive state from snapshot only
+        if snapshot:
+            if snapshot_phase == "Ready":
                 return ("Paused", "SNAPSHOT_READY", "Sandbox paused")
-            if phase in ("Pending", "Committing"):
-                return ("Pausing", f"SNAPSHOT_{phase.upper()}", f"Snapshot is {phase.lower()}")
+            if snapshot_phase in ("Pending", "Committing"):
+                return ("Pausing", f"SNAPSHOT_{snapshot_phase.upper()}", f"Snapshot is {snapshot_phase.lower()}")
+            if snapshot_phase == "Failed":
+                return (
+                    "Failed",
+                    "SNAPSHOT_FAILED",
+                    snapshot.get("status", {}).get("message", "Snapshot failed"),
+                )
 
-        # Resuming (workload from snapshot)
-        if batchsandbox:
-            status = self.workload_provider.get_status(batchsandbox)
-            annotations = batchsandbox.get("metadata", {}).get("annotations", {})
-            if annotations.get("sandbox.opensandbox.io/resumed-from-snapshot") == "true":
-                if status["state"] != "Running":
-                    return ("Resuming", "RESUMING", "Restoring from snapshot")
-            return (status["state"], status["reason"], status["message"])
-
+        # 3. Nothing exists
         return ("NotFound", "SANDBOX_NOT_FOUND", "Sandbox does not exist")
 
     def _build_sandbox_from_workload(self, workload: Any) -> Sandbox:

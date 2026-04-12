@@ -617,6 +617,7 @@ spec:
         """
         Test case: Verify False is returned when workload not found
         """
+        provider = BatchSandboxProvider(mock_k8s_client)
         mock_k8s_client.get_custom_object.return_value = None
 
         result = provider.delete_workload("test-id", "test-ns")
