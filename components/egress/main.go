@@ -23,6 +23,9 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/alibaba/opensandbox/internal/safego"
+	_ "go.uber.org/automaxprocs/maxprocs"
+
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/dnsproxy"
 	"github.com/alibaba/opensandbox/egress/pkg/events"
@@ -31,6 +34,7 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 	"github.com/alibaba/opensandbox/egress/pkg/telemetry"
 	slogger "github.com/alibaba/opensandbox/internal/logger"
+	"github.com/alibaba/opensandbox/internal/safego"
 	"github.com/alibaba/opensandbox/internal/version"
 )
 
@@ -75,7 +79,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to init dns proxy: %v", err)
 	}
-	if err := proxy.Start(); err != nil {
+	if err := proxy.Start(ctx); err != nil {
 		log.Fatalf("failed to start dns proxy: %v", err)
 	}
 	log.Infof("dns proxy started on 127.0.0.1:15353")
@@ -119,6 +123,7 @@ func withLogger(ctx context.Context) context.Context {
 		base = base.With(extra...)
 	}
 	logger := base.Named("opensandbox.egress")
+	safego.InitPanicLogger(ctx, logger)
 	return log.WithLogger(ctx, logger)
 }
 
