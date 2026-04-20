@@ -386,6 +386,7 @@ class CreateSandboxRequest(BaseModel):
         None,
         description="Opaque container for provider-specific or transient parameters not covered by the core API",
     )
+
     class Config:
         populate_by_name = True
 

@@ -20,8 +20,8 @@ spec:
     - jsonPath: .status.phase
       name: PHASE
       type: string
-    - jsonPath: .spec.sandboxId
-      name: SANDBOX_ID
+    - jsonPath: .spec.sandboxName
+      name: SANDBOX
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: AGE
@@ -50,53 +50,28 @@ spec:
           spec:
             description: |-
               SandboxSnapshotSpec defines the desired state of SandboxSnapshot.
-              Spec only contains user input fields (filled by Server), Controller never writes to spec.
+              Pure atomic capability: caller fills spec, Controller only reads spec.
+              Registry/pushSecret/snapshotType come from Controller Manager startup params.
             properties:
-              action:
+              sandboxName:
                 description: |-
-                  Action expresses the desired action for this snapshot.
-                  Controller performs the action when generation > observedGeneration.
-                enum:
-                - Pause
-                - Resume
-                type: string
-              resumeImagePullSecret:
-                description: ResumeImagePullSecret is the Secret name for pulling
-                  snapshot during resume.
-                type: string
-              sandboxId:
-                description: SandboxID is the stable public identifier for the sandbox.
-                type: string
-              snapshotPushSecret:
-                description: SnapshotPushSecret is the Secret name for pushing to
-                  registry.
-                type: string
-              snapshotRegistry:
-                description: SnapshotRegistry is the OCI registry for snapshot images.
-                type: string
-              snapshotType:
-                default: Rootfs
-                description: 'SnapshotType indicates the type of snapshot (default:
-                  Rootfs).'
-                type: string
-              sourceBatchSandboxName:
-                description: SourceBatchSandboxName is the name of the source BatchSandbox.
+                  SandboxName is the name of the target BatchSandbox (same namespace as SandboxSnapshot).
+                  Controller uses this to find BatchSandbox -> find Pod -> dispatch commit Job.
                 type: string
             required:
-            - sandboxId
-            - sourceBatchSandboxName
+            - sandboxName
             type: object
           status:
             description: |-
               SandboxSnapshotStatus defines the observed state of SandboxSnapshot.
-              Status contains all fields filled by Controller.
+              Status is written by Controller, read-only for callers.
             properties:
-              containerSnapshots:
-                description: ContainerSnapshots holds per-container snapshot results
-                  (filled by controller after push).
+              containers:
+                description: Containers holds per-container snapshot results, filled
+                  after Ready.
                 items:
-                  description: ContainerSnapshot represents a snapshot of a single
-                    container.
+                  description: ContainerSnapshot records the snapshot result for a
+                    single container.
                   properties:
                     containerName:
                       description: ContainerName is the name of the container.
@@ -106,63 +81,20 @@ spec:
                         image.
                       type: string
                     imageUri:
-                      description: ImageURI is the target image URI for this container's
-                        snapshot.
+                      description: ImageURI is the snapshot image URI for this container.
                       type: string
                   required:
                   - containerName
                   - imageUri
                   type: object
                 type: array
-              history:
-                description: History records each pause/resume cycle.
-                items:
-                  description: SnapshotRecord represents a single pause or resume
-                    event in the snapshot history.
-                  properties:
-                    action:
-                      description: Action is "Pause" or "Resume".
-                      type: string
-                    message:
-                      description: Message is a human-readable description of the
-                        event.
-                      type: string
-                    timestamp:
-                      description: Timestamp is when this record was created.
-                      format: date-time
-                      type: string
-                    version:
-                      description: Version is the pauseVersion or resumeVersion that
-                        triggered this action.
-                      type: integer
-                  required:
-                  - action
-                  - message
-                  - timestamp
-                  - version
-                  type: object
-                type: array
-              lastPauseAt:
-                description: LastPauseAt records when the last pause was initiated.
-                format: date-time
-                type: string
-              lastResumeAt:
-                description: LastResumeAt records when the last resume was initiated.
-                format: date-time
-                type: string
               message:
                 description: Message provides human-readable status information.
                 type: string
               observedGeneration:
-                description: |-
-                  ObservedGeneration is the most recent spec generation observed by the controller.
-                  Used to detect new pause/resume requests.
+                description: ObservedGeneration is the most recent spec generation
+                  observed by the Controller.
                 format: int64
-                type: integer
-              pauseVersion:
-                description: |-
-                  PauseVersion is the controller's internal pause cycle counter.
-                  Incremented each time a new pause cycle begins.
                 type: integer
               phase:
                 description: Phase indicates the current phase of the snapshot.
@@ -176,27 +108,14 @@ spec:
                 description: ReadyAt is the timestamp when the snapshot became Ready.
                 format: date-time
                 type: string
-              resumeTemplate:
-                description: |-
-                  ResumeTemplate contains enough information to reconstruct BatchSandbox.
-                  Built by Controller from source BatchSandbox template.
-                x-kubernetes-preserve-unknown-fields: true
-              resumeVersion:
-                description: |-
-                  ResumeVersion is the controller's internal resume cycle counter.
-                  Incremented each time a resume is processed.
-                type: integer
               sourceNodeName:
                 description: SourceNodeName is the node where the source Pod runs
-                  (resolved by Controller).
+                  (for Job scheduling).
                 type: string
               sourcePodName:
                 description: SourcePodName is the name of the source Pod (resolved
                   by Controller).
                 type: string
-            required:
-            - pauseVersion
-            - resumeVersion
             type: object
         type: object
     served: true

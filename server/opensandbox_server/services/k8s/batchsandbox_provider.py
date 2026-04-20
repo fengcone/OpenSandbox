@@ -741,15 +741,11 @@ class BatchSandboxProvider(WorkloadProvider):
 
         return None
     
-    def delete_workload(self, sandbox_id: str, namespace: str) -> bool:
-        """Delete BatchSandbox workload.
-
-        Returns:
-            True if deleted, False if not found. Raises on error.
-        """
+    def delete_workload(self, sandbox_id: str, namespace: str) -> None:
+        """Delete BatchSandbox workload."""
         batchsandbox = self.get_workload(sandbox_id, namespace)
         if not batchsandbox:
-            return False
+            raise Exception(f"BatchSandbox for sandbox {sandbox_id} not found")
 
         self.k8s_client.delete_custom_object(
             group=self.group,
@@ -759,7 +755,6 @@ class BatchSandboxProvider(WorkloadProvider):
             name=batchsandbox["metadata"]["name"],
             grace_period_seconds=0,
         )
-        return True
 
     def list_workloads(self, namespace: str, label_selector: str) -> List[Dict[str, Any]]:
         """List BatchSandboxes matching label selector."""
@@ -769,6 +764,20 @@ class BatchSandboxProvider(WorkloadProvider):
             namespace=namespace,
             plural=self.plural,
             label_selector=label_selector,
+        )
+
+    def patch_workload(self, sandbox_id: str, namespace: str, spec_patch: Dict[str, Any]) -> Dict[str, Any]:
+        """Patch BatchSandbox spec (e.g., spec.pause for pause/resume)."""
+        batchsandbox = self.get_workload(sandbox_id, namespace)
+        if not batchsandbox:
+            return None
+        return self.k8s_client.patch_custom_object(
+            group=self.group,
+            version=self.version,
+            namespace=namespace,
+            plural=self.plural,
+            name=batchsandbox["metadata"]["name"],
+            body=spec_patch,
         )
     
     def update_expiration(self, sandbox_id: str, namespace: str, expires_at: datetime) -> None:
@@ -801,7 +810,104 @@ class BatchSandboxProvider(WorkloadProvider):
             name=batchsandbox["metadata"]["name"],
             body=body,
         )
-    
+
+    def pause_sandbox(self, sandbox_id: str, namespace: str) -> None:
+        """Pause a BatchSandbox by patching spec.pause=true.
+
+        Validates that the current status.phase allows pause:
+        - Running: allowed (fresh pause)
+        - Running + PauseFailed=True: allowed (retry after failure)
+        - Pausing/Resuming: not allowed (operation in progress)
+        - Paused: not allowed (already paused)
+        - Failed: not allowed (sandbox unavailable)
+        - Failed + PauseFailed=True: not allowed (sandbox unavailable)
+        """
+        batchsandbox = self.get_workload(sandbox_id, namespace)
+        if not batchsandbox:
+            raise ValueError(f"Sandbox '{sandbox_id}' not found")
+
+        status = batchsandbox.get("status", {})
+        phase = status.get("phase", "")
+        conditions = status.get("conditions", [])
+
+        # Check if PauseFailed condition is True (for retry scenario)
+        pause_failed = False
+        for cond in conditions:
+            if cond.get("type") == "PauseFailed" and cond.get("status") == "True":
+                pause_failed = True
+                break
+
+        # Allow pause when Running (or Running with PauseFailed for retry)
+        if phase == "Running":
+            # Always allowed, even if PauseFailed=True (retry scenario)
+            pass
+        elif phase == "Pausing":
+            raise ValueError(f"Cannot pause: operation in progress (phase={phase})")
+        elif phase == "Resuming":
+            raise ValueError(f"Cannot pause: operation in progress (phase={phase})")
+        elif phase == "Paused":
+            raise ValueError("Sandbox is already paused")
+        elif phase == "Failed":
+            if pause_failed:
+                raise ValueError("Cannot pause: sandbox is not available (pause caused pod loss)")
+            else:
+                raise ValueError("Cannot pause: sandbox is not available")
+        elif phase == "Pending":
+            raise ValueError(f"Cannot pause: sandbox is being created (phase={phase})")
+        else:
+            raise ValueError(f"Cannot pause sandbox in phase {phase}")
+
+        self.patch_workload(sandbox_id, namespace, {"spec": {"pause": True}})
+        logger.info("Patched BatchSandbox %s spec.pause=true", sandbox_id)
+
+    def resume_sandbox(self, sandbox_id: str, namespace: str) -> None:
+        """Resume a BatchSandbox by patching spec.pause=false.
+
+        Validates that the current status.phase allows resume:
+        - Paused: allowed (fresh resume)
+        - Paused + ResumeFailed=True: allowed (retry after failure)
+        - Resuming/Pausing: not allowed (operation in progress)
+        - Running: not allowed (not paused)
+        - Failed: not allowed (sandbox unavailable)
+        """
+        batchsandbox = self.get_workload(sandbox_id, namespace)
+        if not batchsandbox:
+            raise ValueError(f"Sandbox '{sandbox_id}' not found")
+
+        status = batchsandbox.get("status", {})
+        phase = status.get("phase", "")
+        conditions = status.get("conditions", [])
+
+        # Check if ResumeFailed condition is True (for retry scenario)
+        resume_failed = False
+        for cond in conditions:
+            if cond.get("type") == "ResumeFailed" and cond.get("status") == "True":
+                resume_failed = True
+                break
+
+        # Allow resume when Paused (or Paused with ResumeFailed for retry)
+        if phase == "Paused":
+            # Always allowed, even if ResumeFailed=True (retry scenario)
+            pass
+        elif phase == "Resuming":
+            raise ValueError(f"Cannot resume: operation in progress (phase={phase})")
+        elif phase == "Pausing":
+            raise ValueError(f"Cannot resume: operation in progress (phase={phase})")
+        elif phase == "Running":
+            raise ValueError(f"Cannot resume sandbox in phase {phase}, expected Paused")
+        elif phase == "Failed":
+            if resume_failed:
+                raise ValueError("Cannot resume: sandbox is not available (resume caused pod start failure)")
+            else:
+                raise ValueError("Cannot resume: sandbox is not available")
+        elif phase == "Pending":
+            raise ValueError(f"Cannot resume: sandbox is being created (phase={phase})")
+        else:
+            raise ValueError(f"Cannot resume sandbox in phase {phase}, expected Paused")
+
+        self.patch_workload(sandbox_id, namespace, {"spec": {"pause": False}})
+        logger.info("Patched BatchSandbox %s spec.pause=false", sandbox_id)
+
     def get_expiration(self, workload: Dict[str, Any]) -> Optional[datetime]:
         """Get expiration time from BatchSandbox.
         
@@ -965,28 +1071,44 @@ class BatchSandboxProvider(WorkloadProvider):
     def get_status(self, workload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Get status from BatchSandbox.
-        
-        The status is derived from the BatchSandbox status fields:
-        - replicas: total number of pods
-        - allocated: number of scheduled pods
-        - ready: number of ready pods
+
+        Priority:
+        1. status.phase (authoritative, set by Controller for pause/resume lifecycle)
+        2. Pod-level state derived from replicas/allocated/ready (fallback for normal lifecycle)
         """
         status = workload.get("status", {})
-        
+        creation_timestamp = workload.get("metadata", {}).get("creationTimestamp")
+
+        # Phase is authoritative when set (Pausing/Paused/Resuming/Failed)
+        phase = status.get("phase", "")
+        phase_map = {
+            "Pending": ("Pending", "CREATING", "Sandbox is being created"),
+            "Running": ("Running", "RUNNING", "Sandbox is running"),
+            "Pausing": ("Pausing", "PAUSING", "Pausing sandbox"),
+            "Paused": ("Paused", "PAUSED", "Sandbox is paused"),
+            "Resuming": ("Resuming", "RESUMING", "Resuming sandbox"),
+            "Failed": ("Failed", "FAILED", status.get("message") or "Operation failed"),
+        }
+        if phase in phase_map:
+            state, reason, message = phase_map[phase]
+            return {
+                "state": state,
+                "reason": reason,
+                "message": message,
+                "last_transition_at": creation_timestamp,
+            }
+
+        # Fallback: derive from pod state
         replicas = status.get("replicas", 0)
         ready = status.get("ready", 0)
         allocated = status.get("allocated", 0)
-
         pod_ip = self._parse_pod_ip(workload)
 
-        # Determine state: Pending -> Allocated (IP assigned) -> Running (Pod ready)
         if ready == 1 and pod_ip:
-            # Pod is ready and has IP
             state = "Running"
             reason = "POD_READY_WITH_IP"
             message = f"Pod is ready with IP ({ready}/{replicas} ready)"
         elif pod_ip:
-            # Pod has IP assigned but not ready yet
             state = "Allocated"
             reason = "IP_ASSIGNED"
             message = f"Pod has IP assigned but not ready ({allocated}/{replicas} allocated, {ready} ready)"
@@ -997,7 +1119,6 @@ class BatchSandboxProvider(WorkloadProvider):
                 reason = "POD_PLATFORM_UNSCHEDULABLE"
                 message = unschedulable_message
             else:
-            # Pod is not allocated yet or allocated but no IP
                 state = "Pending"
                 reason = "POD_SCHEDULED" if allocated > 0 else "BATCHSANDBOX_PENDING"
                 message = (
@@ -1005,10 +1126,7 @@ class BatchSandboxProvider(WorkloadProvider):
                     if allocated > 0
                     else "BatchSandbox is pending allocation"
                 )
-        
-        # Get creation timestamp
-        creation_timestamp = workload.get("metadata", {}).get("creationTimestamp")
-        
+
         return {
             "state": state,
             "reason": reason,
