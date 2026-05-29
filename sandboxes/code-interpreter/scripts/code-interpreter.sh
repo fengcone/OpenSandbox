@@ -112,11 +112,27 @@ setup_java() {
 	}
 }
 
+tslab_kernels_installed() {
+	local kernels
+	kernels=$(jupyter kernelspec list 2>/dev/null)
+	grep -Eq '^[[:space:]]+tslab[[:space:]]' <<<"$kernels" && grep -Eq '^[[:space:]]+jslab[[:space:]]' <<<"$kernels"
+}
+
+ensure_tslab_command() {
+	if command -v tslab >/dev/null 2>&1; then
+		return
+	fi
+
+	npm install -g tslab
+}
+
 # setup node
 setup_node() {
 	time {
-		npm install -g tslab
-		tslab install
+		ensure_tslab_command
+		if ! tslab_kernels_installed; then
+			tslab install
+		fi
 	}
 }
 
